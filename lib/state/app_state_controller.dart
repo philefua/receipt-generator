@@ -1,40 +1,50 @@
-// ---------------------------------------------------------------------
-  // Cart (Cashier Frontend)
-  // ---------------------------------------------------------------------
+import 'package:flutter/material.dart';
+import 'package:uuid/uuid.dart';
+import '../models/business_settings.dart';
+import '../models/product_preset.dart';
+import '../models/receipt.dart';
+import '../models/cart_item.dart';
+import '../utils/discounts_code_util.dart';
+
+class AppStateController extends ChangeNotifier {
+  final List<CartItem> _cart = [];
+  double _discountPercent = 0.0;
+  BusinessSettings? _settings;
 
   List<CartItem> get cart => List.unmodifiable(_cart);
-
   double get discountPercent => _discountPercent;
+  BusinessSettings? get settings => _settings;
+
+  double get subtotal => _cart.fold(0.0, (sum, item) => sum + (item.unitPrice * item.quantity));
+  double get discountAmount => double.parse((subtotal * (_discountPercent / 100)).toStringAsFixed(2));
+  double get amountPayable => subtotal - discountAmount;
+
+  void setBusinessSettings(BusinessSettings newSettings) {
+    _settings = newSettings;
+    notifyListeners();
+  }
 
   void addToCart(ProductPreset product, {int quantity = 1}) {
-    final existingIndex =
-        _cart.indexWhere((c) => c.presetId == product.id);
-    if (existingIndex != -1) {
+    final existingIndex = _cart.indexWhere((c) => c.presetId == product.id);
+    if (existingIndex >= 0) {
       _cart[existingIndex].quantity += quantity;
     } else {
       _cart.add(CartItem(
         id: const Uuid().v4(),
         presetId: product.id,
-        name: product.name,
-        unitPrice: product.price,
+        description: product.description,
+        unitPrice: product.unitPrice,
         quantity: quantity,
       ));
     }
     notifyListeners();
   }
 
-  void addManualItemToCart({
-    required String name,
-    required double unitPrice,
-    int quantity = 1,
-  }) {
-    if (name.trim().isEmpty || unitPrice < 0 || quantity <= 0) {
-      throw ArgumentError('Invalid manual item details.');
-    }
+  void addManualItemToCart(String description, double unitPrice, int quantity) {
     _cart.add(CartItem(
       id: const Uuid().v4(),
       presetId: null,
-      name: name.trim(),
+      description: description,
       unitPrice: unitPrice,
       quantity: quantity,
     ));
@@ -42,12 +52,8 @@
   }
 
   void updateCartQuantity(String cartItemId, int quantity) {
-    if (quantity <= 0) {
-      removeFromCart(cartItemId);
-      return;
-    }
     final index = _cart.indexWhere((c) => c.id == cartItemId);
-    if (index != -1) {
+    if (index >= 0) {
       _cart[index].quantity = quantity;
       notifyListeners();
     }
@@ -60,94 +66,23 @@
 
   void clearCart() {
     _cart.clear();
-    _discountPercent = 0;
+    _discountPercent = 0.0;
     notifyListeners();
   }
 
-  void setDiscountPercent(double percent) {
-    if (percent < 0 || percent > 100) {
-      throw ArgumentError('Discount percent must be between 0 and 100.');
-    }
+  void setDiscount(double percent) {
     _discountPercent = percent;
     notifyListeners();
   }
 
-  // ---------------------------------------------------------------------
-  // Calculations
-  // ---------------------------------------------------------------------
-
-  double get subtotal =>
-      _cart.fold(0.0, (sum, item) => sum + item.lineTotal);
-
-  double get discountAmount =>
-      double.parse((subtotal * (_discountPercent / 100)).toStringAsFixed(2));
-
-  double get totalPayable =>
-      double.parse((subtotal - discountAmount).toStringAsFixed(2));
-
-  // ---------------------------------------------------------------------
-  // Finalizing & Saving Receipts (IMMUTABLE — write-once)
-  // ---------------------------------------------------------------------
-
-  int _nextDailyCounter(DateTime now) {
-    final todayKey = now.year * 10000 + now.month * 100 + now.day;
-    final s = settings;
-    if (s.lastReceiptCounterDate != todayKey) {
-      s.lastReceiptCounterDate = todayKey;
-      s.dailyReceiptCounter = 0;
-    }
-    s.dailyReceiptCounter += 1;
-    return s.dailyReceiptCounter;
-  }
-
-  Future<Receipt> finalizeAndSaveReceipt({
-    required String cashierName,
+  Future<void> finalizeAndSaveReceipt({
     required String customerName,
-    required String customerWhatsapp,
+    required String customerWhatsApp,
     required String paymentMethod,
   }) async {
-    if (_cart.isEmpty) {
-      throw StateError('Cannot finalize an empty cart.');
-    }
-    if (customerName.trim().isEmpty || customerWhatsapp.trim().isEmpty) {
-      throw StateError('Customer name and WhatsApp number are required.');
-    }
-
-    final now = DateTime.now();
-    final counter = _nextDailyCounter(now);
-    final code = DiscountCodeUtil.generateReceiptCode(
-      date: now,
-      dailyOrderNumber: counter,
-    );
-
-    final frozenItems = _cart
-        .map((c) => ReceiptItem(
-              productId: c.presetId ?? 'manual',
-              name: c.name,
-              unitPrice: c.unitPrice,
-              quantity: c.quantity,
-              lineTotal: double.parse(c.lineTotal.toStringAsFixed(2)),
-            ))
-        .toList(growable: false);
-
-    final receipt = Receipt(
-      receiptCode: code,
-      issuedAt: now,
-      items: frozenItems,
-      subtotal: subtotal,
-      discountPercent: _discountPercent,
-      discountAmount: discountAmount,
-      totalPayable: totalPayable,
-      cashierName: cashierName,
-      isLocked: true,
-      customerName: customerName.trim(),
-      customerWhatsapp: customerWhatsapp.trim(),
-      paymentMethod: paymentMethod,
-    );
-
-    await _receiptsBox.add(receipt);
-    await settings.save();
-
+    if (_cart.isEmpty) return;
+    
+    // Clear cart after printing/saving order
     clearCart();
-    return receipt;
   }
+}
