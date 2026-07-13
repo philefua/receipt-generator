@@ -1,13 +1,17 @@
-import 'product_preset.dart';
-
 class CartItem {
-  final ProductPreset product;
+  final String id;
+  final String? presetId;
+  final String name;
+  final double unitPrice;
   int quantity;
 
   CartItem({
-    required this.product,
-    required this.quantity,
+    required this.id,
+    this.presetId,
+    required this.name,
+    required this.unitPrice,
+    this.quantity = 1,
   });
 
-  double get lineTotal => product.unitPrice * quantity;
+  double get lineTotal => unitPrice * quantity;
 }
