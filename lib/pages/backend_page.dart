@@ -299,6 +299,7 @@ class _BusinessInfoFormState extends State<_BusinessInfoForm> {
   late TextEditingController _instagramController;
   late TextEditingController _facebookController;
   late TextEditingController _footnoteController;
+  late TextEditingController _currencyController;
   bool _initialized = false;
 
   @override
@@ -314,6 +315,8 @@ class _BusinessInfoFormState extends State<_BusinessInfoForm> {
           TextEditingController(text: settings.instagram);
       _facebookController = TextEditingController(text: settings.facebook);
       _footnoteController = TextEditingController(text: settings.footnote);
+      _currencyController =
+          TextEditingController(text: settings.currencySymbol);
       _initialized = true;
     }
   }
@@ -327,6 +330,7 @@ class _BusinessInfoFormState extends State<_BusinessInfoForm> {
     _instagramController.dispose();
     _facebookController.dispose();
     _footnoteController.dispose();
+    _currencyController.dispose();
     super.dispose();
   }
 
@@ -341,6 +345,7 @@ class _BusinessInfoFormState extends State<_BusinessInfoForm> {
       instagram: _instagramController.text.trim(),
       facebook: _facebookController.text.trim(),
       footnote: _footnoteController.text.trim(),
+      currencySymbol: _currencyController.text.trim(),
     );
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -375,6 +380,19 @@ class _BusinessInfoFormState extends State<_BusinessInfoForm> {
                 ),
                 validator: (value) => (value == null || value.trim().isEmpty)
                     ? 'Title heading is required'
+                    : null,
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _currencyController,
+                decoration: const InputDecoration(
+                  labelText: 'Currency Symbol',
+                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.attach_money_outlined),
+                  hintText: 'e.g. ₦, \$, £, €',
+                ),
+                validator: (value) => (value == null || value.trim().isEmpty)
+                    ? 'Currency symbol is required'
                     : null,
               ),
               const SizedBox(height: 12),
