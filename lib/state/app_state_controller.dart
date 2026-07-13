@@ -1,163 +1,282 @@
-import 'package:flutter/material.dart';
+import 'dart:convert';
+import 'package:crypto/crypto.dart';
+import 'package:flutter/foundation.dart';
+import 'package:hive_flutter/hive_flutter.dart';
+import 'package:uuid/uuid.dart';
+
 import '../models/business_settings.dart';
+import '../models/cart_item.dart';
 import '../models/product_preset.dart';
 import '../models/receipt.dart';
-import '../models/cart_item.dart';
-import '../utils/discounts_code_util.dart';
+import '../utils/discount_code_util.dart';
 
 class AppStateController extends ChangeNotifier {
+  static const String _settingsBoxName = 'settings_box';
+  static const String _productsBoxName = 'products_box';
+  static const String _receiptsBoxName = 'receipts_box';
+  static const String _settingsKey = 'business_settings';
+
+  late final Box<BusinessSettings> _settingsBox;
+  late final Box<ProductPreset> _productsBox;
+  late final Box<Receipt> _receiptsBox;
+
   final List<CartItem> _cart = [];
-  final List<ProductPreset> _presets = [];
-  final List<Receipt> _history = [];
-  double _discountPercent = 0.0;
-  
-  // Guarantee settings are initialized so the app doesn't crash on null properties
-  BusinessSettings _settings = BusinessSettings();
+  double _discountPercent = 0;
+  bool _initialized = false;
+
+  bool get isInitialized => _initialized;
+
+  Future<void> init() async {
+    if (_initialized) return;
+
+    _settingsBox = await Hive.openBox<BusinessSettings>(_settingsBoxName);
+    _productsBox = await Hive.openBox<ProductPreset>(_productsBoxName);
+    _receiptsBox = await Hive.openBox<Receipt>(_receiptsBoxName);
+
+    if (!_settingsBox.containsKey(_settingsKey)) {
+      await _settingsBox.put(
+        _settingsKey,
+        BusinessSettings(managerPasswordHash: _hashPassword('admin123')),
+      );
+    }
+
+    _initialized = true;
+    notifyListeners();
+  }
+
+  BusinessSettings get settings => _settingsBox.get(_settingsKey)!;
+
+  static String _hashPassword(String raw) =>
+      sha256.convert(utf8.encode(raw)).toString();
+
+  bool verifyManagerPassword(String attempt) =>
+      settings.managerPasswordHash == _hashPassword(attempt);
+
+  Future<void> updateManagerPassword(String newPassword) async {
+    settings.managerPasswordHash = _hashPassword(newPassword);
+    await settings.save();
+    notifyListeners();
+  }
+
+  Future<void> updateBusinessDetails({
+    String? businessName,
+    String? address,
+    String? phone,
+    String? logoPath,
+    String? currencySymbol,
+    String? whatsapp,
+    String? website,
+    String? instagram,
+    String? facebook,
+    String? footnote,
+  }) async {
+    final s = settings;
+    if (businessName != null) s.businessName = businessName;
+    if (address != null) s.address = address;
+    if (phone != null) s.phone = phone;
+    if (logoPath != null) s.logoPath = logoPath;
+    if (currencySymbol != null) s.currencySymbol = currencySymbol;
+    if (whatsapp != null) s.whatsapp = whatsapp;
+    if (website != null) s.website = website;
+    if (instagram != null) s.instagram = instagram;
+    if (facebook != null) s.facebook = facebook;
+    if (footnote != null) s.footnote = footnote;
+    await s.save();
+    notifyListeners();
+  }
+
+  List<ProductPreset> get productPresets =>
+      List.unmodifiable(_productsBox.values.where((p) => p.isActive));
+
+  Future<void> addProductPreset({
+    required String name,
+    required double price,
+    String? category,
+  }) async {
+    final preset = ProductPreset(
+      id: const Uuid().v4(),
+      name: name,
+      price: price,
+      category: category,
+    );
+    await _productsBox.put(preset.id, preset);
+    notifyListeners();
+  }
+
+  Future<void> updateProductPreset(
+    String id, {
+    String? name,
+    double? price,
+    String? category,
+  }) async {
+    final preset = _productsBox.get(id);
+    if (preset == null) return;
+    if (name != null) preset.name = name;
+    if (price != null) preset.price = price;
+    if (category != null) preset.category = category;
+    await preset.save();
+    notifyListeners();
+  }
+
+  Future<void> deactivateProductPreset(String id) async {
+    final preset = _productsBox.get(id);
+    if (preset == null) return;
+    preset.isActive = false;
+    await preset.save();
+    notifyListeners();
+  }
 
   List<CartItem> get cart => List.unmodifiable(_cart);
-  List<ProductPreset> get productPresets => _presets.where((p) => p.isActive).toList();
-  List<Receipt> get receiptHistory => List.unmodifiable(_history);
+
   double get discountPercent => _discountPercent;
-  BusinessSettings get settings => _settings;
 
-  double get subtotal => _cart.fold(0.0, (sum, item) => sum + item.lineTotal);
-  double get discountAmount => double.parse((subtotal * (_discountPercent / 100)).toStringAsFixed(2));
-  double get totalPayable => subtotal - discountAmount;
-  double get amountPayable => totalPayable;
-
-  // Called by main.dart on startup
-  Future<void> init() async {
-    // Add default sample items if presets are empty
-    if (_presets.isEmpty) {
-      _presets.add(ProductPreset(id: "1", description: "Standard Banner Print", unitPrice: 5000.0));
-      _presets.add(ProductPreset(id: "2", description: "Custom Apparel Branding", unitPrice: 3500.0));
+  void addToCart(ProductPreset product, {int quantity = 1}) {
+    final existingIndex = _cart.indexWhere((c) => c.presetId == product.id);
+    if (existingIndex != -1) {
+      _cart[existingIndex].quantity += quantity;
+    } else {
+      _cart.add(CartItem(
+        id: const Uuid().v4(),
+        presetId: product.id,
+        name: product.name,
+        unitPrice: product.price,
+        quantity: quantity,
+      ));
     }
     notifyListeners();
   }
 
-  bool verifyManagerPassword(String enteredPassword) {
-    return _settings.managerPassword == enteredPassword;
-  }
-
-  Future<void> updateBusinessDetails({
-    required String businessName,
-    required String address,
-    required String whatsapp,
-    required String website,
-    required String instagram,
-    required String facebook,
-    required String footnote,
-  }) async {
-    _settings.businessName = businessName;
-    _settings.address = address;
-    _settings.whatsapp = whatsapp;
-    _settings.website = website;
-    _settings.instagram = instagram;
-    _settings.facebook = facebook;
-    _settings.footnote = footnote;
-    notifyListeners();
-  }
-
-  Future<void> addProductPreset({required String name, required double price}) async {
-    _presets.add(ProductPreset(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
-      description: name,
-      unitPrice: price,
+  void addManualItemToCart({
+    required String name,
+    required double unitPrice,
+    int quantity = 1,
+  }) {
+    if (name.trim().isEmpty || unitPrice < 0 || quantity <= 0) {
+      throw ArgumentError('Invalid manual item details.');
+    }
+    _cart.add(CartItem(
+      id: const Uuid().v4(),
+      presetId: null,
+      name: name.trim(),
+      unitPrice: unitPrice,
+      quantity: quantity,
     ));
     notifyListeners();
   }
 
-  Future<void> updateProductPreset({required String id, required String name, required double price}) async {
-    final index = _presets.indexWhere((p) => p.id == id);
-    if (index >= 0) {
-      _presets[index] = ProductPreset(id: id, description: name, unitPrice: price);
-      notifyListeners();
+  void updateCartQuantity(String cartItemId, int quantity) {
+    if (quantity <= 0) {
+      removeFromCart(cartItemId);
+      return;
     }
-  }
-
-  Future<void> deactivateProductPreset(String id) async {
-    final index = _presets.indexWhere((p) => p.id == id);
-    if (index >= 0) {
-      _presets[index] = ProductPreset(
-        id: _presets[index].id,
-        description: _presets[index].description,
-        unitPrice: _presets[index].unitPrice,
-        isActive: false,
-      );
-      notifyListeners();
-    }
-  }
-
-  void addToCart(ProductPreset product, {int quantity = 1}) {
-    final existingIndex = _cart.indexWhere((c) => c.product.id == product.id);
-    if (existingIndex >= 0) {
-      _cart[existingIndex].quantity += quantity;
-    } else {
-      _cart.add(CartItem(product: product, quantity: quantity));
-    }
-    notifyListeners();
-  }
-
-  void addManualItemToCart(String description, double unitPrice, int quantity) {
-    final tempProduct = ProductPreset(
-      id: "manual_${DateTime.now().millisecondsSinceEpoch}",
-      description: description,
-      unitPrice: unitPrice,
-    );
-    _cart.add(CartItem(product: tempProduct, quantity: quantity));
-    notifyListeners();
-  }
-
-  void updateCartQuantity(String productId, int quantity) {
-    final index = _cart.indexWhere((c) => c.product.id == productId);
-    if (index >= 0) {
+    final index = _cart.indexWhere((c) => c.id == cartItemId);
+    if (index != -1) {
       _cart[index].quantity = quantity;
       notifyListeners();
     }
   }
 
-  void removeFromCart(String productId) {
-    _cart.removeWhere((c) => c.product.id == productId);
+  void removeFromCart(String cartItemId) {
+    _cart.removeWhere((c) => c.id == cartItemId);
     notifyListeners();
   }
 
   void clearCart() {
     _cart.clear();
-    _discountPercent = 0.0;
+    _discountPercent = 0;
     notifyListeners();
   }
 
   void setDiscountPercent(double percent) {
+    if (percent < 0 || percent > 100) {
+      throw ArgumentError('Discount percent must be between 0 and 100.');
+    }
     _discountPercent = percent;
     notifyListeners();
   }
 
-  Future<void> finalizeAndSaveReceipt({
+  double get subtotal => _cart.fold(0.0, (sum, item) => sum + item.lineTotal);
+
+  double get discountAmount =>
+      double.parse((subtotal * (_discountPercent / 100)).toStringAsFixed(2));
+
+  double get totalPayable =>
+      double.parse((subtotal - discountAmount).toStringAsFixed(2));
+
+  int _nextDailyCounter(DateTime now) {
+    final todayKey = now.year * 10000 + now.month * 100 + now.day;
+    final s = settings;
+    if (s.lastReceiptCounterDate != todayKey) {
+      s.lastReceiptCounterDate = todayKey;
+      s.dailyReceiptCounter = 0;
+    }
+    s.dailyReceiptCounter += 1;
+    return s.dailyReceiptCounter;
+  }
+
+  Future<Receipt> finalizeAndSaveReceipt({
+    required String cashierName,
     required String customerName,
-    required String customerWhatsApp,
+    required String customerWhatsapp,
     required String paymentMethod,
-    String cashierName = "", 
   }) async {
-    if (_cart.isEmpty) return;
+    if (_cart.isEmpty) {
+      throw StateError('Cannot finalize an empty cart.');
+    }
+    if (customerName.trim().isEmpty || customerWhatsapp.trim().isEmpty) {
+      throw StateError('Customer name and WhatsApp number are required.');
+    }
 
-    final nextOrderNum = _history.length + 1;
-    final receiptCode = DiscountCodeUtil.generateReceiptCode(nextOrderNum);
+    final now = DateTime.now();
+    final counter = _nextDailyCounter(now);
+    final code = DiscountCodeUtil.generateReceiptCode(
+      date: now,
+      dailyOrderNumber: counter,
+    );
 
-    final newReceipt = Receipt(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
-      receiptCode: receiptCode,
-      timestamp: DateTime.now(),
-      customerName: customerName,
-      customerWhatsApp: customerWhatsApp,
-      items: List.from(_cart),
+    final frozenItems = _cart
+        .map((c) => ReceiptItem(
+              productId: c.presetId ?? 'manual',
+              name: c.name,
+              unitPrice: c.unitPrice,
+              quantity: c.quantity,
+              lineTotal: double.parse(c.lineTotal.toStringAsFixed(2)),
+            ))
+        .toList(growable: false);
+
+    final receipt = Receipt(
+      receiptCode: code,
+      issuedAt: now,
+      items: frozenItems,
       subtotal: subtotal,
       discountPercent: _discountPercent,
       discountAmount: discountAmount,
-      amountPayable: totalPayable,
+      totalPayable: totalPayable,
+      cashierName: cashierName,
+      isLocked: true,
+      customerName: customerName.trim(),
+      customerWhatsapp: customerWhatsapp.trim(),
       paymentMethod: paymentMethod,
     );
 
-    _history.add(newReceipt);
+    await _receiptsBox.add(receipt);
+    await settings.save();
+
     clearCart();
+    return receipt;
+  }
+
+  List<Receipt> get receiptHistory {
+    final list = _receiptsBox.values.toList();
+    list.sort((a, b) => b.issuedAt.compareTo(a.issuedAt));
+    return List.unmodifiable(list);
+  }
+
+  Receipt? findReceiptByCode(String code) {
+    try {
+      return _receiptsBox.values.firstWhere((r) => r.receiptCode == code);
+    } catch (_) {
+      return null;
+    }
   }
 }
