@@ -48,7 +48,7 @@ class BusinessSettings extends HiveObject {
     this.address = '',
     this.phone = '',
     this.logoPath,
-    this.currencySymbol = '\$',
+    this.currencySymbol = '₦',
     required this.managerPasswordHash,
     this.lastReceiptCounterDate = 0,
     this.dailyReceiptCounter = 0,
