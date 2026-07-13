@@ -30,7 +30,6 @@ jobs:
           channel: 'stable'
       - name: Create Missing Android Scaffolding
         run: flutter create.--platforms=android
-          cache: true
 
       - name: Install dependencies
         run: flutter pub get
