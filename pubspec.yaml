@@ -27,6 +27,7 @@ dependencies:
   # --- Sharing receipt image (WhatsApp / generic share sheet) ---
   share_plus: ^10.0.2
   screenshot: ^3.0.0           # render receipt widget -> PNG for sharing/printing
+  url_launcher: ^6.3.1         # deep-link into a specific WhatsApp chat thread
 
   # --- History Export ---
   excel: ^4.0.6
