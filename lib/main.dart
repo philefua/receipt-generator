@@ -7,6 +7,7 @@ import 'models/product_preset.dart';
 import 'models/receipt.dart';
 import 'pages/backend_page.dart';
 import 'pages/frontend_page.dart';
+import 'pages/receipt_history_page.dart';
 import 'state/app_state_controller.dart';
 
 Future<void> main() async {
@@ -61,9 +62,30 @@ class _RootShellState extends State<RootShell> {
     BackendPage(),
   ];
 
+  static const List<String> _titles = [
+    'Cashier',
+    'Manager',
+  ];
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      appBar: AppBar(
+        title: Text(_titles[_selectedIndex]),
+        actions: [
+          IconButton(
+            tooltip: 'Receipt History',
+            icon: const Icon(Icons.history_outlined),
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => const ReceiptHistoryPage(),
+                ),
+              );
+            },
+          ),
+        ],
+      ),
       body: IndexedStack(index: _selectedIndex, children: _pages),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _selectedIndex,
