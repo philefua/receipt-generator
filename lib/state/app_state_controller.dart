@@ -219,6 +219,8 @@ class AppStateController extends ChangeNotifier {
     required String customerName,
     required String customerWhatsapp,
     required String paymentMethod,
+    String couponReference = '',
+    double? depositPaid,
   }) async {
     if (_cart.isEmpty) {
       throw StateError('Cannot finalize an empty cart.');
@@ -244,6 +246,13 @@ class AppStateController extends ChangeNotifier {
             ))
         .toList(growable: false);
 
+    final total = totalPayable;
+    final resolvedDeposit = (depositPaid == null || depositPaid <= 0 || depositPaid >= total)
+        ? total
+        : depositPaid;
+    final resolvedBalance =
+        double.parse((total - resolvedDeposit).toStringAsFixed(2));
+
     final receipt = Receipt(
       receiptCode: code,
       issuedAt: now,
@@ -251,12 +260,15 @@ class AppStateController extends ChangeNotifier {
       subtotal: subtotal,
       discountPercent: _discountPercent,
       discountAmount: discountAmount,
-      totalPayable: totalPayable,
+      totalPayable: total,
       cashierName: cashierName,
       isLocked: true,
       customerName: customerName.trim(),
       customerWhatsapp: customerWhatsapp.trim(),
       paymentMethod: paymentMethod,
+      couponReference: couponReference.trim(),
+      depositPaid: resolvedDeposit,
+      balanceOwed: resolvedBalance < 0 ? 0 : resolvedBalance,
     );
 
     await _receiptsBox.add(receipt);

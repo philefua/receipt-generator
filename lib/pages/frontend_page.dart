@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import '../models/product_preset.dart';
+import '../models/receipt.dart';
+import '../services/thermal_printer_service.dart';
+import '../services/whatsapp_share_service.dart';
 import '../state/app_state_controller.dart';
+import '../widgets/receipt_preview_widget.dart';
 
 class FrontendPage extends StatefulWidget {
   const FrontendPage({super.key});
@@ -25,6 +28,8 @@ class _FrontendPageState extends State<FrontendPage> {
       TextEditingController(text: '1');
   final TextEditingController _discountController =
       TextEditingController(text: '0');
+  final TextEditingController _couponController = TextEditingController();
+  final TextEditingController _depositController = TextEditingController();
 
   ProductPreset? _selectedPreset;
   String _paymentMethod = 'Cash';
@@ -35,6 +40,7 @@ class _FrontendPageState extends State<FrontendPage> {
     super.initState();
     _customerNameController.addListener(_revalidateCustomerFields);
     _customerWhatsappController.addListener(_revalidateCustomerFields);
+    _depositController.addListener(() => setState(() {}));
   }
 
   void _revalidateCustomerFields() {
@@ -53,6 +59,8 @@ class _FrontendPageState extends State<FrontendPage> {
     _itemPriceController.dispose();
     _quantityController.dispose();
     _discountController.dispose();
+    _couponController.dispose();
+    _depositController.dispose();
     super.dispose();
   }
 
@@ -110,6 +118,19 @@ class _FrontendPageState extends State<FrontendPage> {
     }
   }
 
+  double _resolveDepositPaid(double totalPayable) {
+    final entered = double.tryParse(_depositController.text.trim());
+    if (entered == null || entered <= 0) return totalPayable;
+    if (entered >= totalPayable) return totalPayable;
+    return entered;
+  }
+
+  double _resolveBalanceOwed(double totalPayable) {
+    final deposit = _resolveDepositPaid(totalPayable);
+    final balance = totalPayable - deposit;
+    return balance < 0 ? 0 : balance;
+  }
+
   Future<void> _processReceipt(BuildContext context) async {
     final controller = context.read<AppStateController>();
     if (!_customerFormKey.currentState!.validate()) return;
@@ -120,38 +141,29 @@ class _FrontendPageState extends State<FrontendPage> {
       return;
     }
 
+    final depositPaid = _resolveDepositPaid(controller.totalPayable);
+
     try {
       final receipt = await controller.finalizeAndSaveReceipt(
         cashierName: 'Front Desk',
         customerName: _customerNameController.text.trim(),
         customerWhatsapp: _customerWhatsappController.text.trim(),
         paymentMethod: _paymentMethod,
+        couponReference: _couponController.text.trim(),
+        depositPaid: depositPaid,
       );
 
       if (!context.mounted) return;
       _customerNameController.clear();
       _customerWhatsappController.clear();
       _discountController.text = '0';
+      _couponController.clear();
+      _depositController.clear();
       setState(() => _paymentMethod = 'Cash');
 
       showDialog(
         context: context,
-        builder: (_) => AlertDialog(
-          title: const Text('Receipt Processed'),
-          content: Text(
-            'Receipt Code: ${receipt.receiptCode}\n'
-            'Customer: ${receipt.customerName}\n'
-            'Total Paid: ${controller.settings.currencySymbol}'
-            '${receipt.totalPayable.toStringAsFixed(2)}\n'
-            'Payment: ${receipt.paymentMethod}',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('OK'),
-            ),
-          ],
-        ),
+        builder: (_) => _ReceiptResultDialog(receipt: receipt),
       );
     } catch (e) {
       if (!context.mounted) return;
@@ -345,6 +357,16 @@ class _FrontendPageState extends State<FrontendPage> {
               onChanged: (value) => _applyDiscount(controller, value),
             ),
             const SizedBox(height: 12),
+            TextField(
+              controller: _couponController,
+              decoration: const InputDecoration(
+                labelText: 'Coupon Reference (optional)',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.local_offer_outlined),
+                hintText: 'e.g. SAVE10, Staff-Approved',
+              ),
+            ),
+            const SizedBox(height: 12),
             ElevatedButton.icon(
               onPressed: () => _addItemToReceipt(context),
               icon: const Icon(Icons.add_shopping_cart_outlined),
@@ -444,6 +466,12 @@ class _FrontendPageState extends State<FrontendPage> {
   Widget _buildSummaryPanel(BuildContext context) {
     final controller = context.watch<AppStateController>();
     final currency = controller.settings.currencySymbol;
+    final totalPayable = controller.totalPayable;
+    final depositPaid = _resolveDepositPaid(totalPayable);
+    final balanceOwed = _resolveBalanceOwed(totalPayable);
+    final hasPartialDeposit = _depositController.text.trim().isNotEmpty &&
+        (double.tryParse(_depositController.text.trim()) ?? 0) > 0 &&
+        balanceOwed > 0;
 
     return Card(
       child: Padding(
@@ -477,7 +505,7 @@ class _FrontendPageState extends State<FrontendPage> {
                     style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                   ),
                   Text(
-                    '$currency${controller.totalPayable.toStringAsFixed(2)}',
+                    '$currency${totalPayable.toStringAsFixed(2)}',
                     style: TextStyle(
                       fontSize: 20,
                       fontWeight: FontWeight.bold,
@@ -487,6 +515,58 @@ class _FrontendPageState extends State<FrontendPage> {
                 ],
               ),
             ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _depositController,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(
+                labelText: 'Deposit Paid (optional)',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.savings_outlined),
+                hintText: 'Leave blank if paid in full',
+              ),
+            ),
+            if (hasPartialDeposit) ...[
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: Colors.red.shade50,
+                  border: Border.all(color: Colors.red.shade200),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _summaryRow('Deposit Paid', depositPaid, currency),
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            'Balance Owed',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.red.shade800,
+                            ),
+                          ),
+                          Text(
+                            '$currency${balanceOwed.toStringAsFixed(2)}',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.red.shade800,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
             const SizedBox(height: 16),
             DropdownButtonFormField<String>(
               initialValue: _paymentMethod,
@@ -583,6 +663,105 @@ class _FrontendPageState extends State<FrontendPage> {
           },
         ),
       ),
+    );
+  }
+}
+
+class _ReceiptResultDialog extends StatefulWidget {
+  final Receipt receipt;
+
+  const _ReceiptResultDialog({required this.receipt});
+
+  @override
+  State<_ReceiptResultDialog> createState() => _ReceiptResultDialogState();
+}
+
+class _ReceiptResultDialogState extends State<_ReceiptResultDialog> {
+  final GlobalKey _previewKey = GlobalKey();
+  bool _isPrinting = false;
+  bool _isSharing = false;
+
+  Future<void> _handlePrint(AppStateController controller) async {
+    setState(() => _isPrinting = true);
+    final result = await ThermalPrinterService.instance.printReceipt(
+      receipt: widget.receipt,
+      business: controller.settings,
+    );
+    if (!mounted) return;
+    setState(() => _isPrinting = false);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(result.message),
+        backgroundColor:
+            result.success ? Colors.green.shade700 : Colors.red.shade700,
+      ),
+    );
+  }
+
+  Future<void> _handleShare() async {
+    setState(() => _isSharing = true);
+    final result = await WhatsappShareService.instance.shareReceiptToCustomer(
+      boundaryKey: _previewKey,
+      customerPhoneNumber: widget.receipt.customerWhatsapp,
+      receiptCode: widget.receipt.receiptCode,
+    );
+    if (!mounted) return;
+    setState(() => _isSharing = false);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(result.message),
+        backgroundColor:
+            result.success ? Colors.green.shade700 : Colors.red.shade700,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = context.watch<AppStateController>();
+
+    return AlertDialog(
+      title: const Text('Receipt Processed'),
+      content: SizedBox(
+        width: 380,
+        child: SingleChildScrollView(
+          child: RepaintBoundary(
+            key: _previewKey,
+            child: ReceiptPreviewWidget(
+              receipt: widget.receipt,
+              business: controller.settings,
+            ),
+          ),
+        ),
+      ),
+      actions: [
+        TextButton.icon(
+          onPressed: _isPrinting ? null : () => _handlePrint(controller),
+          icon: _isPrinting
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.print_outlined),
+          label: Text(_isPrinting ? 'Printing...' : 'Print'),
+        ),
+        TextButton.icon(
+          onPressed: _isSharing ? null : _handleShare,
+          icon: _isSharing
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.share_outlined),
+          label: Text(_isSharing ? 'Sharing...' : 'Share'),
+        ),
+        ElevatedButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Done'),
+        ),
+      ],
     );
   }
 }

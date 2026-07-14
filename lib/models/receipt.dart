@@ -66,6 +66,15 @@ class Receipt extends HiveObject {
   @HiveField(11)
   final String paymentMethod;
 
+  @HiveField(12)
+  final String couponReference;
+
+  @HiveField(13)
+  final double depositPaid;
+
+  @HiveField(14)
+  final double balanceOwed;
+
   Receipt({
     required this.receiptCode,
     required this.issuedAt,
@@ -79,5 +88,8 @@ class Receipt extends HiveObject {
     this.customerName = '',
     this.customerWhatsapp = '',
     this.paymentMethod = 'Cash',
+    this.couponReference = '',
+    this.depositPaid = 0,
+    this.balanceOwed = 0,
   });
 }

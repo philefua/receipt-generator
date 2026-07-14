@@ -41,7 +41,7 @@ class ThermalPrinterService {
   static final ThermalPrinterService instance =
       ThermalPrinterService._internal();
 
-  static const int _paperWidthChars = 32; // standard 58mm @ Font A (12x24)
+  static const int _paperWidthChars = 32;
 
   String? _connectedAddress;
 
@@ -49,14 +49,6 @@ class ThermalPrinterService {
 
   String? get connectedAddress => _connectedAddress;
 
-  // -----------------------------------------------------------------------
-  // 1. Bluetooth Scanner & Connector
-  // -----------------------------------------------------------------------
-
-  /// Returns the list of devices already paired with the Android OS.
-  /// print_bluetooth_thermal relies on OS-level pairing rather than raw
-  /// BLE scanning, so the printer must be paired via system Bluetooth
-  /// settings first.
   Future<List<PrinterDevice>> getPairedDevices() async {
     try {
       final List<BluetoothInfo> devices =
@@ -69,8 +61,6 @@ class ThermalPrinterService {
     }
   }
 
-  /// Connects to a printer at the given MAC address. Disconnects any
-  /// previously connected printer first to avoid dangling sockets.
   Future<PrinterOperationResult> connect(String address) async {
     try {
       if (_connectedAddress != null && _connectedAddress != address) {
@@ -124,22 +114,15 @@ class ThermalPrinterService {
     }
   }
 
-  // -----------------------------------------------------------------------
-  // 2 & 3. Document Formatting Engine (58mm, bold heading, wrapped text,
-  // aligned columns)
-  // -----------------------------------------------------------------------
-
-  /// Builds the full ESC/POS byte payload for a finalized [Receipt].
   Future<List<int>> buildReceiptBytes({
     required Receipt receipt,
     required BusinessSettings business,
   }) async {
     final profile = await CapabilityProfile.load();
     final generator = Generator(PaperSize.mm58, profile);
-    final List<int> bytes = [];
+    final List<int> bytes = <int>[];
 
-    // --- Header: business name, bold, centered ---
-    bytes += generator.text(
+    bytes.addAll(generator.text(
       business.businessName,
       styles: const PosStyles(
         align: PosAlign.center,
@@ -147,13 +130,13 @@ class ThermalPrinterService {
         height: PosTextSize.size2,
         width: PosTextSize.size2,
       ),
-    );
+    ));
 
     if (business.address.isNotEmpty) {
-      bytes += generator.text(
+      bytes.addAll(generator.text(
         business.address,
         styles: const PosStyles(align: PosAlign.center),
-      );
+      ));
     }
 
     final contactLine = [
@@ -161,10 +144,10 @@ class ThermalPrinterService {
       if (business.whatsapp.isNotEmpty) 'WA: ${business.whatsapp}',
     ].join(' | ');
     if (contactLine.isNotEmpty) {
-      bytes += generator.text(
+      bytes.addAll(generator.text(
         contactLine,
         styles: const PosStyles(align: PosAlign.center, fontType: PosFontType.fontB),
-      );
+      ));
     }
 
     final socialLine = [
@@ -173,104 +156,113 @@ class ThermalPrinterService {
       if (business.facebook.isNotEmpty) 'FB: ${business.facebook}',
     ].join(' | ');
     if (socialLine.isNotEmpty) {
-      bytes += generator.text(
+      bytes.addAll(generator.text(
         socialLine,
         styles: const PosStyles(align: PosAlign.center, fontType: PosFontType.fontB),
-      );
+      ));
     }
 
-    bytes += generator.hr(ch: '-');
+    bytes.addAll(generator.hr(ch: '-'));
 
-    // --- Meta: timestamp, discount/serial code, customer, payment ---
-    bytes += generator.text(
+    bytes.addAll(generator.text(
       'Date: ${_formatDateTime(receipt.issuedAt)}',
       styles: const PosStyles(align: PosAlign.left),
-    );
-    bytes += generator.text(
+    ));
+    bytes.addAll(generator.text(
       'Code: ${receipt.receiptCode}',
       styles: const PosStyles(align: PosAlign.left, bold: true),
-    );
-    bytes += generator.text(
+    ));
+    bytes.addAll(generator.text(
       'Cashier: ${receipt.cashierName}',
       styles: const PosStyles(align: PosAlign.left),
-    );
+    ));
 
     if (receipt.customerName.isNotEmpty) {
-      bytes += generator.text(
+      bytes.addAll(generator.text(
         'Customer: ${receipt.customerName}',
         styles: const PosStyles(align: PosAlign.left),
-      );
+      ));
     }
     if (receipt.customerWhatsapp.isNotEmpty) {
-      bytes += generator.text(
+      bytes.addAll(generator.text(
         'Customer WA: ${receipt.customerWhatsapp}',
         styles: const PosStyles(align: PosAlign.left),
-      );
+      ));
     }
 
-    bytes += generator.hr(ch: '-');
+    bytes.addAll(generator.hr(ch: '-'));
 
-    // --- Column header: Item | Qty | Total ---
-    bytes += generator.text(
+    bytes.addAll(generator.text(
       _buildColumnRow('ITEM', 'QTY', 'TOTAL'),
       styles: const PosStyles(bold: true),
-    );
-    bytes += generator.hr(ch: '-');
+    ));
+    bytes.addAll(generator.hr(ch: '-'));
 
-    // --- Itemized lines, wrapped and column-aligned ---
     for (final item in receipt.items) {
-      bytes += _emitItemRow(
+      bytes.addAll(_buildItemRowBytes(
         generator: generator,
         name: item.name,
         unitPrice: item.unitPrice,
         quantity: item.quantity,
         lineTotal: item.lineTotal,
-      );
+      ));
     }
 
-    bytes += generator.hr(ch: '-');
+    bytes.addAll(generator.hr(ch: '-'));
 
-    // --- Totals block ---
-    bytes += generator.text(_buildTotalsRow('Subtotal', receipt.subtotal));
-    bytes += generator.text(
+    bytes.addAll(generator.text(_buildTotalsRow('Subtotal', receipt.subtotal)));
+    bytes.addAll(generator.text(
       _buildTotalsRow(
         'Discount (${receipt.discountPercent.toStringAsFixed(1)}%)',
         -receipt.discountAmount,
       ),
-    );
-    bytes += generator.hr(ch: '=');
-    bytes += generator.text(
+    ));
+
+    if (receipt.couponReference.isNotEmpty) {
+      bytes.addAll(generator.text(
+        'Coupon: ${receipt.couponReference}',
+        styles: const PosStyles(align: PosAlign.left, fontType: PosFontType.fontB),
+      ));
+    }
+
+    bytes.addAll(generator.hr(ch: '='));
+    bytes.addAll(generator.text(
       _buildTotalsRow('TOTAL', receipt.totalPayable),
       styles: const PosStyles(
         bold: true,
         height: PosTextSize.size2,
         width: PosTextSize.size1,
       ),
-    );
-    bytes += generator.text(
-      'Payment: ${receipt.paymentMethod}',
-      styles: const PosStyles(align: PosAlign.left, bold: true),
-    );
+    ));
 
-    // --- Footer ---
-    if (business.footnote.isNotEmpty) {
-      bytes += generator.hr(ch: '-');
-      bytes += generator.text(
-        business.footnote,
-        styles: const PosStyles(align: PosAlign.center),
-      );
+    if (receipt.balanceOwed > 0) {
+      bytes.addAll(generator.text(_buildTotalsRow('Deposit Paid', receipt.depositPaid)));
+      bytes.addAll(generator.text(
+        _buildTotalsRow('BALANCE OWED', receipt.balanceOwed),
+        styles: const PosStyles(bold: true),
+      ));
     }
 
-    bytes += generator.feed(2);
-    bytes += generator.cut();
+    bytes.addAll(generator.text(
+      'Payment: ${receipt.paymentMethod}',
+      styles: const PosStyles(align: PosAlign.left, bold: true),
+    ));
+
+    if (business.footnote.isNotEmpty) {
+      bytes.addAll(generator.hr(ch: '-'));
+      bytes.addAll(generator.text(
+        business.footnote,
+        styles: const PosStyles(align: PosAlign.center),
+      ));
+    }
+
+    bytes.addAll(generator.feed(2));
+    bytes.addAll(generator.cut());
 
     return bytes;
   }
 
-  /// Emits one or more printer lines for a single item, wrapping the
-  /// description across multiple lines when it doesn't fit alongside
-  /// the Qty/Total columns, and printing Qty/Total only on the first line.
-  List<int> _emitItemRow({
+  List<int> _buildItemRowBytes({
     required Generator generator,
     required String name,
     required double unitPrice,
@@ -279,13 +271,13 @@ class ThermalPrinterService {
   }) {
     const int qtyWidth = 4;
     const int totalWidth = 9;
-    final int nameWidth = _paperWidthChars - qtyWidth - totalWidth;
+    const int nameWidth = _paperWidthChars - qtyWidth - totalWidth;
 
     final List<String> wrappedNameLines = _wrapText(name, nameWidth);
     final String qtyStr = quantity.toString().padLeft(qtyWidth - 1);
     final String totalStr = lineTotal.toStringAsFixed(2).padLeft(totalWidth - 1);
 
-    final List<int> out = [];
+    final List<int> out = <int>[];
 
     for (int i = 0; i < wrappedNameLines.length; i++) {
       final String namePart = wrappedNameLines[i].padRight(nameWidth);
@@ -298,7 +290,6 @@ class ThermalPrinterService {
       out.addAll(generator.text(row, styles: const PosStyles(align: PosAlign.left)));
     }
 
-    // Unit price sub-line for clarity when quantity > 1.
     if (quantity > 1) {
       out.addAll(
         generator.text(
@@ -314,8 +305,6 @@ class ThermalPrinterService {
     return out;
   }
 
-  /// Greedy word-wrap that never splits a word mid-character unless the
-  /// single word itself exceeds the column width.
   List<String> _wrapText(String text, int width) {
     if (text.isEmpty) return [''];
     final words = text.split(RegExp(r'\s+'));
@@ -357,11 +346,11 @@ class ThermalPrinterService {
   String _buildColumnRow(String item, String qty, String total) {
     const int qtyWidth = 4;
     const int totalWidth = 9;
-    final int nameWidth = _paperWidthChars - qtyWidth - totalWidth;
-    return item.padRight(nameWidth) +
-        qty.padLeft(qtyWidth - 1) +
-        ' ' +
-        total.padLeft(totalWidth - 1);
+    const int nameWidth = _paperWidthChars - qtyWidth - totalWidth;
+    final String namePart = item.padRight(nameWidth);
+    final String qtyPart = qty.padLeft(qtyWidth - 1);
+    final String totalPart = total.padLeft(totalWidth - 1);
+    return '$namePart$qtyPart $totalPart';
   }
 
   String _buildTotalsRow(String label, double value) {
@@ -380,13 +369,6 @@ class ThermalPrinterService {
     return '$y-$m-$d $h:$min';
   }
 
-  // -----------------------------------------------------------------------
-  // 4. Execute Printing
-  // -----------------------------------------------------------------------
-
-  /// Streams the given byte payload to the currently connected printer.
-  /// Returns a [PrinterOperationResult] rather than throwing, so calling
-  /// UI code can surface a clean success/failure message.
   Future<PrinterOperationResult> printBytes(List<int> bytes) async {
     try {
       final bool connected = await checkConnectionStatus();
@@ -407,7 +389,6 @@ class ThermalPrinterService {
     }
   }
 
-  /// Convenience method: builds and prints a receipt in one call.
   Future<PrinterOperationResult> printReceipt({
     required Receipt receipt,
     required BusinessSettings business,

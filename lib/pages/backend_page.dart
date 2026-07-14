@@ -104,7 +104,7 @@ class _BackendPageState extends State<BackendPage> {
     try {
       final receipts = controller.receiptHistory;
       final workbook = xls.Excel.createExcel();
-      final sheetName = 'Receipt History';
+      const sheetName = 'Receipt History';
       final sheet = workbook[sheetName];
       if (workbook.getDefaultSheet() != null &&
           workbook.getDefaultSheet() != sheetName) {
