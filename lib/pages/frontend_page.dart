@@ -698,22 +698,35 @@ class _ReceiptResultDialogState extends State<_ReceiptResultDialog> {
     );
   }
 
-  Future<void> _handleShare() async {
+ Future<void> _handleShare() async {
     setState(() => _isSharing = true);
-    final result = await WhatsappShareService.instance.shareReceiptImage(
-      boundaryKey: _previewKey,
-      receiptCode: widget.receipt.receiptCode,
-      captionPhoneNumber: widget.receipt.customerWhatsapp,
-    );
-    if (!mounted) return;
-    setState(() => _isSharing = false);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(result.message),
-        backgroundColor:
-            result.success ? Colors.green.shade700 : Colors.red.shade700,
-      ),
-    );
+    try {
+      final result = await WhatsappShareService.instance.shareReceiptImage(
+        boundaryKey: _previewKey,
+        receiptCode: widget.receipt.receiptCode,
+        captionPhoneNumber: widget.receipt.customerWhatsapp,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(result.message),
+          backgroundColor:
+              result.success ? Colors.green.shade700 : Colors.red.shade700,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to share receipt: $e'),
+          backgroundColor: Colors.red.shade700,
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isSharing = false);
+      }
+    }
   }
 
   @override
