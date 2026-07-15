@@ -700,10 +700,10 @@ class _ReceiptResultDialogState extends State<_ReceiptResultDialog> {
 
   Future<void> _handleShare() async {
     setState(() => _isSharing = true);
-    final result = await WhatsappShareService.instance.shareReceiptToCustomer(
+    final result = await WhatsappShareService.instance.shareReceiptImage(
       boundaryKey: _previewKey,
-      customerPhoneNumber: widget.receipt.customerWhatsapp,
       receiptCode: widget.receipt.receiptCode,
+      captionPhoneNumber: widget.receipt.customerWhatsapp,
     );
     if (!mounted) return;
     setState(() => _isSharing = false);
