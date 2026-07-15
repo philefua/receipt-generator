@@ -99,43 +99,34 @@ class WhatsappShareService {
 
   /// Captures the receipt, saves it to cache, and opens the system share
   /// sheet with WhatsApp as one of the available targets.
-  ///
-  /// NOTE: On some Android devices (notably Samsung One UI), the share_plus
-  /// plugin's internal result-tracking throws a LateInitializationError
-  /// asynchronously, unrelated to whether the share sheet actually opened
-  /// successfully. To avoid this ever surfacing as a false failure, the
-  /// share call is deliberately NOT awaited here — it is fired and its
-  /// error channel is separately caught and discarded, fully detached from
-  /// this function's own success/failure return value.
   Future<ShareOperationResult> shareReceiptImage({
     required GlobalKey boundaryKey,
     String? receiptCode,
     String? captionPhoneNumber,
   }) async {
-    final Uint8List bytes = await captureReceiptAsImage(boundaryKey);
-    final File file = await saveImageToTempFile(
-      bytes,
-      fileNamePrefix: 'receipt_${receiptCode ?? 'export'}',
-    );
+    try {
+      final Uint8List bytes = await captureReceiptAsImage(boundaryKey);
+      final File file = await saveImageToTempFile(
+        bytes,
+        fileNamePrefix: 'receipt_${receiptCode ?? 'export'}',
+      );
 
-    final String caption = captionPhoneNumber != null &&
-            captionPhoneNumber.trim().isNotEmpty
-        ? 'Receipt${receiptCode != null ? ' #$receiptCode' : ''} for $captionPhoneNumber'
-        : 'Receipt${receiptCode != null ? ' #$receiptCode' : ''}';
+      final String caption = captionPhoneNumber != null &&
+              captionPhoneNumber.trim().isNotEmpty
+          ? 'Receipt${receiptCode != null ? ' #$receiptCode' : ''} for $captionPhoneNumber'
+          : 'Receipt${receiptCode != null ? ' #$receiptCode' : ''}';
 
-    // Fire the share intent without awaiting its result. Attach a
-    // catchError so any exception the plugin throws later is swallowed
-    // silently rather than becoming an unhandled async error or being
-    // mistakenly caught by an unrelated try/catch elsewhere.
-    // ignore: unawaited_futures
-    Share.shareXFiles(
-      [XFile(file.path, mimeType: 'image/png')],
-      text: caption,
-    ).catchError((_) {
-      return const ShareResult('', ShareResultStatus.success);
-    });
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(file.path, mimeType: 'image/png')],
+          text: caption,
+        ),
+      );
 
-    return ShareOperationResult.ok('Receipt shared successfully.');
+      return ShareOperationResult.ok('Receipt shared successfully.');
+    } catch (e) {
+      return ShareOperationResult.fail('Failed to share receipt: $e');
+    }
   }
 
   /// Opens WhatsApp directly on the specified customer's chat thread with

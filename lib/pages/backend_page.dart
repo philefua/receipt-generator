@@ -173,32 +173,23 @@ class _BackendPageState extends State<BackendPage> {
 
       if (!context.mounted) return;
 
-      final shareResult = await Share.shareXFiles(
-        [XFile(filePath, name: fileName)],
-        text: 'Receipt history export ($fileName)',
+     await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(filePath, name: fileName)],
+          text: 'Receipt history export ($fileName)',
+        ),
       );
 
       if (!context.mounted) return;
 
-      if (shareResult.status == ShareResultStatus.success) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'Exported ${receipts.length} receipts. Choose "Save to Downloads" or your preferred app.',
-            ),
-            backgroundColor: Colors.green.shade700,
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Exported ${receipts.length} receipts. Choose "Save to Downloads" or your preferred app.',
           ),
-        );
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'Export ready: $fileName. Share sheet was closed before saving.',
-            ),
-            backgroundColor: Colors.orange.shade700,
-          ),
-        );
-      }
+          backgroundColor: Colors.green.shade700,
+        ),
+      );
     } catch (e) {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
