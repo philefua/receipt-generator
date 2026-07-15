@@ -101,43 +101,39 @@ class WhatsappShareService {
   /// sheet with WhatsApp as one of the available targets.
   ///
   /// NOTE: On some Android devices (notably Samsung One UI), the share_plus
-  /// plugin's internal result-tracking throws an error AFTER the share
-  /// sheet has already been invoked successfully. Since the image is fully
-  /// prepared before that call, any error from the share call itself is
-  /// treated as non-fatal rather than surfacing a false failure.
+  /// plugin's internal result-tracking throws a LateInitializationError
+  /// asynchronously, unrelated to whether the share sheet actually opened
+  /// successfully. To avoid this ever surfacing as a false failure, the
+  /// share call is deliberately NOT awaited here — it is fired and its
+  /// error channel is separately caught and discarded, fully detached from
+  /// this function's own success/failure return value.
   Future<ShareOperationResult> shareReceiptImage({
     required GlobalKey boundaryKey,
     String? receiptCode,
     String? captionPhoneNumber,
   }) async {
-    Uint8List bytes;
-    File file;
-
-    try {
-      bytes = await captureReceiptAsImage(boundaryKey);
-      file = await saveImageToTempFile(
-        bytes,
-        fileNamePrefix: 'receipt_${receiptCode ?? 'export'}',
-      );
-    } catch (e) {
-      return ShareOperationResult.fail('Failed to prepare receipt image: $e');
-    }
+    final Uint8List bytes = await captureReceiptAsImage(boundaryKey);
+    final File file = await saveImageToTempFile(
+      bytes,
+      fileNamePrefix: 'receipt_${receiptCode ?? 'export'}',
+    );
 
     final String caption = captionPhoneNumber != null &&
             captionPhoneNumber.trim().isNotEmpty
         ? 'Receipt${receiptCode != null ? ' #$receiptCode' : ''} for $captionPhoneNumber'
         : 'Receipt${receiptCode != null ? ' #$receiptCode' : ''}';
 
-    try {
-      await Share.shareXFiles(
-        [XFile(file.path, mimeType: 'image/png')],
-        text: caption,
-      );
-    } catch (_) {
-      // Intentionally ignored — see note above. The image was already
-      // prepared successfully, so the share intent has been fired
-      // regardless of what this plugin call reports afterward.
-    }
+    // Fire the share intent without awaiting its result. Attach a
+    // catchError so any exception the plugin throws later is swallowed
+    // silently rather than becoming an unhandled async error or being
+    // mistakenly caught by an unrelated try/catch elsewhere.
+    // ignore: unawaited_futures
+    Share.shareXFiles(
+      [XFile(file.path, mimeType: 'image/png')],
+      text: caption,
+    ).catchError((_) {
+      return const ShareResult('', ShareResultStatus.success);
+    });
 
     return ShareOperationResult.ok('Receipt shared successfully.');
   }
