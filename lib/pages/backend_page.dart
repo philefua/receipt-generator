@@ -4,8 +4,8 @@ import 'package:excel/excel.dart' as xls;
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../models/product_preset.dart';
 import '../state/app_state_controller.dart';
@@ -98,15 +98,6 @@ class _BackendPageState extends State<BackendPage> {
     );
   }
 
-  Future<bool> _ensureStoragePermission() async {
-    final status = await Permission.manageExternalStorage.status;
-    if (status.isGranted) return true;
-    final result = await Permission.manageExternalStorage.request();
-    if (result.isGranted) return true;
-    final legacy = await Permission.storage.request();
-    return legacy.isGranted;
-  }
-
   Future<void> _exportHistoryToExcel(BuildContext context) async {
     final controller = context.read<AppStateController>();
     setState(() => _isExporting = true);
@@ -173,39 +164,39 @@ class _BackendPageState extends State<BackendPage> {
       final fileName =
           'receipt_history_${DateFormat('yyyyMMdd_HHmmss').format(DateTime.now())}.xlsx';
 
-      final hasPermission = await _ensureStoragePermission();
-      Directory targetDir;
-      bool savedToDownloads = false;
-
-      if (hasPermission) {
-        final downloadsDir = Directory('/storage/emulated/0/Download');
-        if (await downloadsDir.exists()) {
-          targetDir = downloadsDir;
-          savedToDownloads = true;
-        } else {
-          targetDir = await getApplicationDocumentsDirectory();
-        }
-      } else {
-        targetDir = await getApplicationDocumentsDirectory();
-      }
-
-      final filePath = '${targetDir.path}/$fileName';
+      final directory = await getApplicationDocumentsDirectory();
+      final filePath = '${directory.path}/$fileName';
       final file = File(filePath);
       await file.writeAsBytes(bytes, flush: true);
 
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            savedToDownloads
-                ? 'Exported ${receipts.length} receipts to Downloads/$fileName'
-                : 'Storage permission denied. Saved ${receipts.length} receipts to app storage instead: $fileName',
-          ),
-          backgroundColor: savedToDownloads
-              ? Colors.green.shade700
-              : Colors.orange.shade700,
-        ),
+
+      final shareResult = await Share.shareXFiles(
+        [XFile(filePath, name: fileName)],
+        text: 'Receipt history export ($fileName)',
       );
+
+      if (!context.mounted) return;
+
+      if (shareResult.status == ShareResultStatus.success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Exported ${receipts.length} receipts. Choose "Save to Downloads" or your preferred app.',
+            ),
+            backgroundColor: Colors.green.shade700,
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Export ready: $fileName. Share sheet was closed before saving.',
+            ),
+            backgroundColor: Colors.orange.shade700,
+          ),
+        );
+      }
     } catch (e) {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
