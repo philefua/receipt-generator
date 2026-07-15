@@ -116,9 +116,9 @@ class WhatsappShareService {
           ? 'Receipt${receiptCode != null ? ' #$receiptCode' : ''} for $captionPhoneNumber'
           : 'Receipt${receiptCode != null ? ' #$receiptCode' : ''}';
 
-      await SharePlus.instance.share(
+    await SharePlus.instance.share(
         ShareParams(
-          files: [XFile(file.path, mimeType: 'image/png')],
+          files: [XFile(file.path)],
           text: caption,
         ),
       );

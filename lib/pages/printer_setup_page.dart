@@ -45,17 +45,26 @@ class _PrinterSetupPageState extends State<PrinterSetupPage> {
       return;
     }
 
-    final devices = await ThermalPrinterService.instance.getPairedDevices();
-    if (!mounted) return;
-    setState(() {
-      _devices = devices;
-      _isLoading = false;
-      if (devices.isEmpty) {
-        _statusMessage =
-            'No paired printers found. Pair your thermal printer in device Bluetooth settings first, then tap Refresh.';
-        _statusIsError = false;
-      }
-    });
+ try {
+      final devices = await ThermalPrinterService.instance.getPairedDevices();
+      if (!mounted) return;
+      setState(() {
+        _devices = devices;
+        _isLoading = false;
+        if (devices.isEmpty) {
+          _statusMessage =
+              'No paired printers found. Pair your thermal printer in device Bluetooth settings first, then tap Refresh.';
+          _statusIsError = false;
+        }
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isLoading = false;
+        _statusMessage = 'Could not read paired printers: $e';
+        _statusIsError = true;
+      });
+    }
   }
 
   Future<void> _connectTo(PrinterDevice device) async {

@@ -68,16 +68,12 @@ class ThermalPrinterService {
     );
   }
 
-  Future<List<PrinterDevice>> getPairedDevices() async {
-    try {
-      final List<BluetoothInfo> devices =
-          await PrintBluetoothThermal.pairedBluetooths;
-      return devices
-          .map((d) => PrinterDevice(name: d.name, address: d.macAdress))
-          .toList(growable: false);
-    } catch (e) {
-      return const [];
-    }
+Future<List<PrinterDevice>> getPairedDevices() async {
+    final List<BluetoothInfo> devices =
+        await PrintBluetoothThermal.pairedBluetooths;
+    return devices
+        .map((d) => PrinterDevice(name: d.name, address: d.macAdress))
+        .toList(growable: false);
   }
 
   Future<PrinterOperationResult> connect(
