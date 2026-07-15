@@ -7,6 +7,7 @@ import 'models/product_preset.dart';
 import 'models/receipt.dart';
 import 'pages/backend_page.dart';
 import 'pages/frontend_page.dart';
+import 'pages/printer_setup_page.dart';
 import 'pages/receipt_history_page.dart';
 import 'state/app_state_controller.dart';
 
@@ -73,6 +74,17 @@ class _RootShellState extends State<RootShell> {
       appBar: AppBar(
         title: Text(_titles[_selectedIndex]),
         actions: [
+          IconButton(
+            tooltip: 'Printer Setup',
+            icon: const Icon(Icons.print_outlined),
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => const PrinterSetupPage(),
+                ),
+              );
+            },
+          ),
           IconButton(
             tooltip: 'Receipt History',
             icon: const Icon(Icons.history_outlined),

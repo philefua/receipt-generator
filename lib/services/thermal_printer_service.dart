@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:esc_pos_utils_plus/esc_pos_utils_plus.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:print_bluetooth_thermal/print_bluetooth_thermal.dart';
 
 import '../models/business_settings.dart';
@@ -44,10 +45,28 @@ class ThermalPrinterService {
   static const int _paperWidthChars = 32;
 
   String? _connectedAddress;
+  String? _connectedName;
 
   bool get isConnected => _connectedAddress != null;
 
   String? get connectedAddress => _connectedAddress;
+
+  String? get connectedName => _connectedName;
+
+  /// Requests the runtime Bluetooth permissions required on Android 12+.
+  /// The manifest already declares these; this requests user consent at
+  /// runtime, without which scanning/connecting will silently fail.
+  Future<bool> requestPermissions() async {
+    final statuses = await [
+      Permission.bluetoothConnect,
+      Permission.bluetoothScan,
+      Permission.locationWhenInUse,
+    ].request();
+
+    return statuses.values.every(
+      (status) => status.isGranted || status.isLimited,
+    );
+  }
 
   Future<List<PrinterDevice>> getPairedDevices() async {
     try {
@@ -61,7 +80,10 @@ class ThermalPrinterService {
     }
   }
 
-  Future<PrinterOperationResult> connect(String address) async {
+  Future<PrinterOperationResult> connect(
+    String address, {
+    String? name,
+  }) async {
     try {
       if (_connectedAddress != null && _connectedAddress != address) {
         await disconnect();
@@ -79,10 +101,11 @@ class ThermalPrinterService {
 
       if (result) {
         _connectedAddress = address;
-        return PrinterOperationResult.ok('Connected to $address');
+        _connectedName = name;
+        return PrinterOperationResult.ok('Connected to ${name ?? address}');
       }
       return PrinterOperationResult.fail(
-        'Failed to connect to printer at $address',
+        'Failed to connect to printer at ${name ?? address}',
       );
     } catch (e) {
       return PrinterOperationResult.fail('Connection error: $e');
@@ -93,6 +116,7 @@ class ThermalPrinterService {
     try {
       final bool result = await PrintBluetoothThermal.disconnect;
       _connectedAddress = null;
+      _connectedName = null;
       return result
           ? PrinterOperationResult.ok('Disconnected.')
           : PrinterOperationResult.fail('Disconnect returned false.');
@@ -106,10 +130,12 @@ class ThermalPrinterService {
       final status = await PrintBluetoothThermal.connectionStatus;
       if (!status) {
         _connectedAddress = null;
+        _connectedName = null;
       }
       return status;
     } catch (e) {
       _connectedAddress = null;
+      _connectedName = null;
       return false;
     }
   }
