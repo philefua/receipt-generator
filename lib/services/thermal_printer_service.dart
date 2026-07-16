@@ -2,8 +2,8 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:esc_pos_utils_plus/esc_pos_utils_plus.dart';
+import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:print_bluetooth_thermal/print_bluetooth_thermal.dart';
 
 import '../models/business_settings.dart';
 import '../models/receipt.dart';
@@ -19,8 +19,7 @@ class PrinterDevice {
   String toString() => '$name ($address)';
 }
 
-/// Result wrapper for printer operations, since print_bluetooth_thermal
-/// APIs return plain booleans/strings rather than throwing.
+/// Result wrapper for printer operations.
 class PrinterOperationResult {
   final bool success;
   final String message;
@@ -34,8 +33,9 @@ class PrinterOperationResult {
       PrinterOperationResult(success: false, message: message);
 }
 
-/// Handles Bluetooth discovery/connection and ESC/POS document generation
-/// for 58mm thermal receipt printers.
+/// Handles Bluetooth Classic (SPP) discovery/connection and ESC/POS
+/// document generation for 58mm thermal receipt printers, using
+/// flutter_bluetooth_serial for the transport layer.
 class ThermalPrinterService {
   ThermalPrinterService._internal();
 
@@ -44,19 +44,18 @@ class ThermalPrinterService {
 
   static const int _paperWidthChars = 32;
 
+  BluetoothConnection? _connection;
   String? _connectedAddress;
   String? _connectedName;
 
-  bool get isConnected => _connectedAddress != null;
+  bool get isConnected =>
+      _connection != null && (_connection!.isConnected);
 
   String? get connectedAddress => _connectedAddress;
 
   String? get connectedName => _connectedName;
 
   /// Requests the runtime Bluetooth permissions required on Android 12+.
-  /// Only bluetoothConnect (and the legacy bluetooth permission for older
-  /// devices) is requested, since this app only reads already-paired
-  /// devices and never actively scans for new ones.
   Future<bool> requestPermissions() async {
     final statuses = await [
       Permission.bluetoothConnect,
@@ -81,81 +80,82 @@ class ThermalPrinterService {
   }
 
   Future<List<PrinterDevice>> getPairedDevices() async {
-    final List<BluetoothInfo> devices =
-        await PrintBluetoothThermal.pairedBluetooths;
+    final List<BluetoothDevice> devices =
+        await FlutterBluetoothSerial.instance.getBondedDevices();
     return devices
-        .map((d) => PrinterDevice(name: d.name, address: d.macAdress))
+        .map((d) => PrinterDevice(
+              name: d.name ?? 'Unnamed device',
+              address: d.address,
+            ))
         .toList(growable: false);
   }
 
-  /// Connects to the printer at [address]. Only forces a disconnect first
-  /// when we believe a *different* printer is currently connected — an
-  /// earlier version of this method unconditionally disconnected before
-  /// every attempt, which was found to put the plugin's native Bluetooth
-  /// socket into a bad state and break subsequent connection attempts
-  /// entirely. After a successful connect, a brief settle delay is added
-  /// before returning, since some generic/clone thermal printers report
-  /// the connection as ready slightly before they can actually accept
-  /// a write.
+  /// Connects to the printer at [address] using Bluetooth Classic SPP.
+  /// Closes any existing connection first only if it's to a different
+  /// address than the one being requested.
   Future<PrinterOperationResult> connect(
     String address, {
     String? name,
   }) async {
     try {
-      if (_connectedAddress != null && _connectedAddress != address) {
+      if (_connection != null &&
+          _connectedAddress != null &&
+          _connectedAddress != address) {
         await disconnect();
       }
 
-      final bool alreadyConnected =
-          await PrintBluetoothThermal.connectionStatus;
-      if (alreadyConnected && _connectedAddress == address) {
+      if (_connection != null &&
+          _connection!.isConnected &&
+          _connectedAddress == address) {
         return PrinterOperationResult.ok('Already connected.');
       }
 
-      final bool result = await PrintBluetoothThermal.connect(
-        macPrinterAddress: address,
-      );
+      final BluetoothConnection connection =
+          await BluetoothConnection.toAddress(address);
 
-      if (result) {
-        _connectedAddress = address;
-        _connectedName = name;
-        await Future<void>.delayed(const Duration(milliseconds: 800));
-        return PrinterOperationResult.ok('Connected to ${name ?? address}');
-      }
-      return PrinterOperationResult.fail(
-        'Failed to connect to printer at ${name ?? address}',
-      );
+      _connection = connection;
+      _connectedAddress = address;
+      _connectedName = name;
+
+      // Brief settle delay after connecting, since some generic/clone
+      // thermal printers report the connection as ready slightly before
+      // they can actually accept a write.
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+
+      return PrinterOperationResult.ok('Connected to ${name ?? address}');
     } catch (e) {
-      return PrinterOperationResult.fail('Connection error: $e');
+      _connection = null;
+      _connectedAddress = null;
+      _connectedName = null;
+      return PrinterOperationResult.fail(
+        'Failed to connect to printer at ${name ?? address}: $e',
+      );
     }
   }
 
   Future<PrinterOperationResult> disconnect() async {
     try {
-      final bool result = await PrintBluetoothThermal.disconnect;
+      await _connection?.close();
+      _connection = null;
       _connectedAddress = null;
       _connectedName = null;
-      return result
-          ? PrinterOperationResult.ok('Disconnected.')
-          : PrinterOperationResult.fail('Disconnect returned false.');
+      return PrinterOperationResult.ok('Disconnected.');
     } catch (e) {
+      _connection = null;
+      _connectedAddress = null;
+      _connectedName = null;
       return PrinterOperationResult.fail('Disconnect error: $e');
     }
   }
 
   Future<bool> checkConnectionStatus() async {
-    try {
-      final status = await PrintBluetoothThermal.connectionStatus;
-      if (!status) {
-        _connectedAddress = null;
-        _connectedName = null;
-      }
-      return status;
-    } catch (e) {
+    final connected = _connection != null && _connection!.isConnected;
+    if (!connected) {
+      _connection = null;
       _connectedAddress = null;
       _connectedName = null;
-      return false;
     }
+    return connected;
   }
 
   Future<List<int>> buildReceiptBytes({
@@ -413,6 +413,7 @@ class ThermalPrinterService {
     return '$y-$m-$d $h:$min';
   }
 
+  /// Sends [bytes] directly over the open BluetoothConnection socket.
   Future<PrinterOperationResult> printBytes(List<int> bytes) async {
     try {
       bool connected = await checkConnectionStatus();
@@ -425,7 +426,7 @@ class ThermalPrinterService {
         connected = reconnectResult.success;
       }
 
-      if (!connected) {
+      if (!connected || _connection == null) {
         return PrinterOperationResult.fail(
           'No printer connected. Connect to a device first.',
         );
@@ -433,26 +434,14 @@ class ThermalPrinterService {
 
       final Uint8List payload = Uint8List.fromList(bytes);
 
-      // Brief settle delay immediately before writing, in case the
-      // connection was only just established a moment ago.
-      await Future<void>.delayed(const Duration(milliseconds: 300));
-      bool result = await PrintBluetoothThermal.writeBytes(payload);
+      _connection!.output.add(payload);
+      await _connection!.output.allSent;
 
-      if (!result) {
-        // One retry after a further pause — some generic/clone SPP
-        // printers reject the very first write after connecting but
-        // accept a retry once their receive buffer has settled.
-        await Future<void>.delayed(const Duration(milliseconds: 500));
-        result = await PrintBluetoothThermal.writeBytes(payload);
-      }
-
-      return result
-          ? PrinterOperationResult.ok('Receipt sent to printer.')
-          : PrinterOperationResult.fail(
-              'Printer rejected the print job. Ensure it has paper and is powered on, then try again.',
-            );
+      return PrinterOperationResult.ok('Receipt sent to printer.');
     } catch (e) {
-      return PrinterOperationResult.fail('Print error: $e');
+      return PrinterOperationResult.fail(
+        'Printer rejected the print job: $e. Ensure it has paper and is powered on, then try again.',
+      );
     }
   }
 

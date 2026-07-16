@@ -20,9 +20,9 @@ dependencies:
   path_provider: ^2.1.4
 
   # --- Hardware: 58mm Bluetooth Thermal Printing ---
-  print_bluetooth_thermal: ^1.1.3
+  flutter_bluetooth_serial: ^0.4.0
   esc_pos_utils_plus: ^2.0.4   # builds ESC/POS byte commands for the printer
-  permission_handler: ^11.3.1  # runtime Bluetooth permissions
+  permission_handler: ^11.4.0  # runtime Bluetooth permissions
 
   # --- Sharing receipt image (WhatsApp / generic share sheet) ---
   share_plus: ^13.2.0
