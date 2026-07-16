@@ -402,9 +402,21 @@ Future<List<PrinterDevice>> getPairedDevices() async {
     return '$y-$m-$d $h:$min';
   }
 
-  Future<PrinterOperationResult> printBytes(List<int> bytes) async {
+Future<PrinterOperationResult> printBytes(List<int> bytes) async {
     try {
-      final bool connected = await checkConnectionStatus();
+      bool connected = await checkConnectionStatus();
+
+      if (!connected && _connectedAddress != null) {
+        // The Bluetooth SPP connection may have silently dropped while
+        // idle (common on Android). Attempt one reconnect using the last
+        // known address before giving up entirely.
+        final reconnectResult = await connect(
+          _connectedAddress!,
+          name: _connectedName,
+        );
+        connected = reconnectResult.success;
+      }
+
       if (!connected) {
         return PrinterOperationResult.fail(
           'No printer connected. Connect to a device first.',
@@ -412,11 +424,26 @@ Future<List<PrinterDevice>> getPairedDevices() async {
       }
 
       final Uint8List payload = Uint8List.fromList(bytes);
-      final bool result = await PrintBluetoothThermal.writeBytes(payload);
+      bool result = await PrintBluetoothThermal.writeBytes(payload);
+
+      if (!result && _connectedAddress != null) {
+        // The write itself failed even though the connection appeared
+        // fine — try one fresh reconnect-and-retry before reporting
+        // failure to the user.
+        final reconnectResult = await connect(
+          _connectedAddress!,
+          name: _connectedName,
+        );
+        if (reconnectResult.success) {
+          result = await PrintBluetoothThermal.writeBytes(payload);
+        }
+      }
 
       return result
           ? PrinterOperationResult.ok('Receipt sent to printer.')
-          : PrinterOperationResult.fail('Printer rejected the print job.');
+          : PrinterOperationResult.fail(
+              'Printer rejected the print job. Try reconnecting from Printer Setup and printing again.',
+            );
     } catch (e) {
       return PrinterOperationResult.fail('Print error: $e');
     }

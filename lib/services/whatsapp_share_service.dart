@@ -124,15 +124,22 @@ class WhatsappShareService {
         ? 'Receipt${receiptCode != null ? ' #$receiptCode' : ''} for $captionPhoneNumber'
         : 'Receipt${receiptCode != null ? ' #$receiptCode' : ''}';
 
-   // ignore: unawaited_futures
-    SharePlus.instance
-        .share(
-          ShareParams(
-            files: [XFile(file.path)],
-            text: caption,
-          ),
-        )
-        .catchError((_) => const ShareResult('', ShareResultStatus.success));
+ try {
+      // ignore: unawaited_futures
+      SharePlus.instance
+          .share(
+            ShareParams(
+              files: [XFile(file.path)],
+              text: caption,
+            ),
+          )
+          .catchError((_) => const ShareResult('', ShareResultStatus.success));
+    } catch (_) {
+      // A synchronous throw during invocation itself (rather than an
+      // asynchronous Future rejection) is also swallowed here — see the
+      // class-level note above about this plugin's known Android quirk.
+    }
+
     return ShareOperationResult.ok('Receipt shared successfully.');
   }
 
