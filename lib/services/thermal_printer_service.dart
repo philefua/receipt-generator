@@ -61,23 +61,16 @@ class ThermalPrinterService {
   String? get connectedName => _connectedName;
 
   /// Requests the runtime Bluetooth permissions required on Android 12+.
-  Future<bool> requestPermissions() async {
-    final statuses = await [
-      Permission.bluetoothConnect,
-      Permission.bluetooth,
-    ].request();
+Future<bool> requestPermissions() async {
+    // Only bluetoothConnect is checked — the legacy Permission.bluetooth
+    // does not map cleanly to a real runtime permission on Android 12+
+    // and was found to report false negatives even when the real
+    // permission the app needs is already granted.
+    final status = await Permission.bluetoothConnect.request();
 
-    final bool allGranted = statuses.values.every(
-      (status) => status.isGranted || status.isLimited,
-    );
+    if (status.isGranted || status.isLimited) return true;
 
-    if (allGranted) return true;
-
-    final anyPermanentlyDenied = statuses.values.any(
-      (status) => status.isPermanentlyDenied,
-    );
-
-    if (anyPermanentlyDenied) {
+    if (status.isPermanentlyDenied) {
       await openAppSettings();
     }
 
