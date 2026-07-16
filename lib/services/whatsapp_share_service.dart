@@ -100,31 +100,38 @@ class WhatsappShareService {
   /// Captures the receipt, saves it to cache, and opens the system share
   /// sheet with WhatsApp as one of the available targets.
   ///
-  /// The image capture and file save are awaited normally, since genuine
-  /// failures there should be reported. The share invocation itself is
-  /// deliberately NOT awaited: on some Android devices (confirmed on
-  /// Samsung One UI), share_plus's internal Android result-tracking
-  /// throws a LateInitializationError after the share sheet has already
-  /// been shown successfully. Awaiting that call directly propagates this
-  /// spurious error into our result. Firing it without awaiting, and
-  /// discarding whatever it reports afterward, avoids this entirely.
+  /// Each stage (capture, save, invoke) is wrapped in its own try/catch
+  /// with a distinct [STAGE: ...] tag on failure, so any error message
+  /// surfaced to the user tells us precisely which step actually failed
+  /// rather than a single generic message covering all three.
   Future<ShareOperationResult> shareReceiptImage({
     required GlobalKey boundaryKey,
     String? receiptCode,
     String? captionPhoneNumber,
   }) async {
-    final Uint8List bytes = await captureReceiptAsImage(boundaryKey);
-    final File file = await saveImageToTempFile(
-      bytes,
-      fileNamePrefix: 'receipt_${receiptCode ?? 'export'}',
-    );
+    Uint8List bytes;
+    try {
+      bytes = await captureReceiptAsImage(boundaryKey);
+    } catch (e) {
+      return ShareOperationResult.fail('[STAGE: capture] $e');
+    }
+
+    File file;
+    try {
+      file = await saveImageToTempFile(
+        bytes,
+        fileNamePrefix: 'receipt_${receiptCode ?? 'export'}',
+      );
+    } catch (e) {
+      return ShareOperationResult.fail('[STAGE: save] $e');
+    }
 
     final String caption = captionPhoneNumber != null &&
             captionPhoneNumber.trim().isNotEmpty
         ? 'Receipt${receiptCode != null ? ' #$receiptCode' : ''} for $captionPhoneNumber'
         : 'Receipt${receiptCode != null ? ' #$receiptCode' : ''}';
 
- try {
+    try {
       // ignore: unawaited_futures
       SharePlus.instance
           .share(
@@ -134,10 +141,8 @@ class WhatsappShareService {
             ),
           )
           .catchError((_) => const ShareResult('', ShareResultStatus.success));
-    } catch (_) {
-      // A synchronous throw during invocation itself (rather than an
-      // asynchronous Future rejection) is also swallowed here — see the
-      // class-level note above about this plugin's known Android quirk.
+    } catch (e) {
+      return ShareOperationResult.fail('[STAGE: invoke] $e');
     }
 
     return ShareOperationResult.ok('Receipt shared successfully.');

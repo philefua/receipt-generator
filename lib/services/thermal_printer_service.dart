@@ -54,9 +54,10 @@ class ThermalPrinterService {
   String? get connectedName => _connectedName;
 
   /// Requests the runtime Bluetooth permissions required on Android 12+.
-  /// The manifest already declares these; this requests user consent at
-  /// runtime, without which scanning/connecting will silently fail.
-Future<bool> requestPermissions() async {
+  /// Only bluetoothConnect (and the legacy bluetooth permission for older
+  /// devices) is requested, since this app only reads already-paired
+  /// devices and never actively scans for new ones.
+  Future<bool> requestPermissions() async {
     final statuses = await [
       Permission.bluetoothConnect,
       Permission.bluetooth,
@@ -79,7 +80,7 @@ Future<bool> requestPermissions() async {
     return false;
   }
 
-Future<List<PrinterDevice>> getPairedDevices() async {
+  Future<List<PrinterDevice>> getPairedDevices() async {
     final List<BluetoothInfo> devices =
         await PrintBluetoothThermal.pairedBluetooths;
     return devices
@@ -87,17 +88,19 @@ Future<List<PrinterDevice>> getPairedDevices() async {
         .toList(growable: false);
   }
 
-Future<PrinterOperationResult> connect(
+  /// Connects to the printer at [address]. Always forces a clean
+  /// disconnect first, regardless of current in-memory state, since the
+  /// plugin's native Bluetooth socket can retain an "already connected"
+  /// state across app restarts or after a silent connection drop, which
+  /// then blocks a fresh connect() call from succeeding. A short delay
+  /// after disconnecting gives the Bluetooth stack time to fully release
+  /// the socket; if the first connect attempt still fails, one retry is
+  /// made after a further pause.
+  Future<PrinterOperationResult> connect(
     String address, {
     String? name,
   }) async {
     try {
-      // Always force a clean disconnect first, regardless of what our
-      // own state thinks. The plugin's native Bluetooth socket can retain
-      // an "already connected" state across app restarts or after a
-      // silent connection drop, which then blocks a fresh connect() call
-      // from succeeding. This is cheap and harmless when there is nothing
-      // to disconnect.
       try {
         await PrintBluetoothThermal.disconnect;
       } catch (_) {
@@ -106,11 +109,18 @@ Future<PrinterOperationResult> connect(
       _connectedAddress = null;
       _connectedName = null;
 
-      await Future<void>.delayed(const Duration(milliseconds: 300));
+      await Future<void>.delayed(const Duration(milliseconds: 1200));
 
-      final bool result = await PrintBluetoothThermal.connect(
+      bool result = await PrintBluetoothThermal.connect(
         macPrinterAddress: address,
       );
+
+      if (!result) {
+        await Future<void>.delayed(const Duration(milliseconds: 1500));
+        result = await PrintBluetoothThermal.connect(
+          macPrinterAddress: address,
+        );
+      }
 
       if (result) {
         _connectedAddress = address;
@@ -118,7 +128,7 @@ Future<PrinterOperationResult> connect(
         return PrinterOperationResult.ok('Connected to ${name ?? address}');
       }
       return PrinterOperationResult.fail(
-        'Failed to connect to printer at ${name ?? address}',
+        'Failed to connect to printer at ${name ?? address} after 2 attempts.',
       );
     } catch (e) {
       return PrinterOperationResult.fail('Connection error: $e');
@@ -408,14 +418,11 @@ Future<PrinterOperationResult> connect(
     return '$y-$m-$d $h:$min';
   }
 
-Future<PrinterOperationResult> printBytes(List<int> bytes) async {
+  Future<PrinterOperationResult> printBytes(List<int> bytes) async {
     try {
       bool connected = await checkConnectionStatus();
 
       if (!connected && _connectedAddress != null) {
-        // The Bluetooth SPP connection may have silently dropped while
-        // idle (common on Android). Attempt one reconnect using the last
-        // known address before giving up entirely.
         final reconnectResult = await connect(
           _connectedAddress!,
           name: _connectedName,
@@ -433,9 +440,6 @@ Future<PrinterOperationResult> printBytes(List<int> bytes) async {
       bool result = await PrintBluetoothThermal.writeBytes(payload);
 
       if (!result && _connectedAddress != null) {
-        // The write itself failed even though the connection appeared
-        // fine — try one fresh reconnect-and-retry before reporting
-        // failure to the user.
         final reconnectResult = await connect(
           _connectedAddress!,
           name: _connectedName,
