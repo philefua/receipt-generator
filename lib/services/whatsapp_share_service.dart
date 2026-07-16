@@ -1,12 +1,7 @@
-import 'dart:io';
-import 'dart:typed_data';
-import 'dart:ui' as ui;
-
-import 'package:flutter/rendering.dart';
-import 'package:flutter/widgets.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
+
+import '../models/business_settings.dart';
+import '../models/receipt.dart';
 
 /// Result wrapper for share operations so calling UI code can display a
 /// clean success/failure message without needing try/catch everywhere.
@@ -23,130 +18,15 @@ class ShareOperationResult {
       ShareOperationResult(success: false, message: message);
 }
 
-/// Captures a visually composed receipt (via RepaintBoundary), saves it to
-/// the device cache directory, and shares it toward WhatsApp.
+/// Sends a formatted, multi-line summary of a finalized receipt directly
+/// to the customer's WhatsApp chat via the wa.me deep link. This avoids
+/// on-device image rendering entirely, relying only on a plain pre-filled
+/// text message — the most reliable sharing path available across devices.
 class WhatsappShareService {
   WhatsappShareService._internal();
 
   static final WhatsappShareService instance =
       WhatsappShareService._internal();
-
-  Future<Uint8List> captureReceiptAsImage(
-    GlobalKey boundaryKey, {
-    double pixelRatio = 3.0,
-  }) async {
-    final RenderObject? renderObject =
-        boundaryKey.currentContext?.findRenderObject();
-
-    if (renderObject == null || renderObject is! RenderRepaintBoundary) {
-      throw StateError(
-        'No RepaintBoundary found for the given key. Ensure the receipt '
-        'widget is wrapped in a RepaintBoundary and has been rendered '
-        'at least one frame before capturing.',
-      );
-    }
-
-    final RenderRepaintBoundary boundary = renderObject;
-
-    if (boundary.debugNeedsPaint) {
-      await Future<void>.delayed(const Duration(milliseconds: 50));
-      return captureReceiptAsImage(boundaryKey, pixelRatio: pixelRatio);
-    }
-
-    final ui.Image image = await boundary.toImage(pixelRatio: pixelRatio);
-    final ByteData? byteData =
-        await image.toByteData(format: ui.ImageByteFormat.png);
-    image.dispose();
-
-    if (byteData == null) {
-      throw StateError('Failed to encode captured image to PNG bytes.');
-    }
-
-    return byteData.buffer.asUint8List();
-  }
-
-  Future<File> saveImageToTempFile(
-    Uint8List imageBytes, {
-    required String fileNamePrefix,
-  }) async {
-    final Directory cacheDir = await getTemporaryDirectory();
-    final String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
-    final String filePath =
-        '${cacheDir.path}/${fileNamePrefix}_$timestamp.png';
-
-    final File file = File(filePath);
-    await file.writeAsBytes(imageBytes, flush: true);
-    return file;
-  }
-
-  Future<void> clearCachedReceiptImages({
-    String fileNamePrefix = 'receipt',
-  }) async {
-    try {
-      final Directory cacheDir = await getTemporaryDirectory();
-      final List<FileSystemEntity> entities = cacheDir.listSync();
-      for (final entity in entities) {
-        if (entity is File &&
-            entity.path.contains(fileNamePrefix) &&
-            entity.path.endsWith('.png')) {
-          await entity.delete();
-        }
-      }
-    } catch (_) {
-      // Non-critical cleanup failure; safe to ignore.
-    }
-  }
-
-  /// Captures the receipt, saves it to cache, and opens the system share
-  /// sheet with WhatsApp as one of the available targets.
-  ///
-  /// Each stage (capture, save, invoke) is wrapped in its own try/catch
-  /// with a distinct [STAGE: ...] tag on failure, so any error message
-  /// surfaced to the user tells us precisely which step actually failed
-  /// rather than a single generic message covering all three.
-  Future<ShareOperationResult> shareReceiptImage({
-    required GlobalKey boundaryKey,
-    String? receiptCode,
-    String? captionPhoneNumber,
-  }) async {
-    Uint8List bytes;
-    try {
-      bytes = await captureReceiptAsImage(boundaryKey);
-    } catch (e) {
-      return ShareOperationResult.fail('[STAGE: capture] $e');
-    }
-
-    File file;
-    try {
-      file = await saveImageToTempFile(
-        bytes,
-        fileNamePrefix: 'receipt_${receiptCode ?? 'export'}',
-      );
-    } catch (e) {
-      return ShareOperationResult.fail('[STAGE: save] $e');
-    }
-
-    final String caption = captionPhoneNumber != null &&
-            captionPhoneNumber.trim().isNotEmpty
-        ? 'Receipt${receiptCode != null ? ' #$receiptCode' : ''} for $captionPhoneNumber'
-        : 'Receipt${receiptCode != null ? ' #$receiptCode' : ''}';
-
-    try {
-      // ignore: unawaited_futures
-      SharePlus.instance
-          .share(
-            ShareParams(
-              files: [XFile(file.path)],
-              text: caption,
-            ),
-          )
-          .catchError((_) => const ShareResult('', ShareResultStatus.success));
-    } catch (e) {
-      return ShareOperationResult.fail('[STAGE: invoke] $e');
-    }
-
-    return ShareOperationResult.ok('Receipt shared successfully.');
-  }
 
   /// Opens WhatsApp directly on the specified customer's chat thread with
   /// a pre-filled text message.
@@ -179,30 +59,71 @@ class WhatsappShareService {
     }
   }
 
-  /// Opens the specific customer's chat with a text message first, then
-  /// immediately triggers the image share sheet.
-  Future<ShareOperationResult> shareReceiptToCustomer({
-    required GlobalKey boundaryKey,
-    required String customerPhoneNumber,
-    required String receiptCode,
-    String greetingMessage =
-        'Thank you for your purchase! Here is your receipt:',
-  }) async {
-    final chatResult = await openWhatsAppChat(
-      phoneNumber: customerPhoneNumber,
-      message: '$greetingMessage (Receipt #$receiptCode)',
+  /// Builds a multi-line, customer-facing summary of the receipt. The
+  /// business name appears as a header, and the manager's configured
+  /// footnote (if set) appears at the very end. Address and phone are
+  /// deliberately excluded — only the business name, transaction details,
+  /// and footnote are included.
+  String _buildReceiptMessage(Receipt receipt, BusinessSettings business) {
+    final buffer = StringBuffer();
+    final currencySymbol = business.currencySymbol;
+
+    buffer.writeln(business.businessName);
+    buffer.writeln();
+    buffer.writeln('Receipt No: ${receipt.receiptCode}');
+    buffer.writeln();
+    buffer.writeln('Items:');
+    for (final item in receipt.items) {
+      buffer.writeln(
+        '- ${item.name} x${item.quantity} — $currencySymbol${item.lineTotal.toStringAsFixed(2)}',
+      );
+    }
+    buffer.writeln();
+    buffer.writeln(
+      'Subtotal: $currencySymbol${receipt.subtotal.toStringAsFixed(2)}',
     );
 
-    if (!chatResult.success) {
-      return chatResult;
+    if (receipt.discountPercent > 0) {
+      buffer.writeln(
+        'Discount (${receipt.discountPercent.toStringAsFixed(1)}%): '
+        '-$currencySymbol${receipt.discountAmount.toStringAsFixed(2)}',
+      );
     }
 
-    await Future<void>.delayed(const Duration(milliseconds: 800));
+    buffer.writeln(
+      'Total Payable: $currencySymbol${receipt.totalPayable.toStringAsFixed(2)}',
+    );
 
-    return shareReceiptImage(
-      boundaryKey: boundaryKey,
-      receiptCode: receiptCode,
-      captionPhoneNumber: customerPhoneNumber,
+    if (receipt.balanceOwed > 0) {
+      buffer.writeln(
+        'Deposit Paid: $currencySymbol${receipt.depositPaid.toStringAsFixed(2)}',
+      );
+      buffer.writeln(
+        'Balance Owed: $currencySymbol${receipt.balanceOwed.toStringAsFixed(2)}',
+      );
+    }
+
+    buffer.writeln();
+    buffer.writeln('Thank you for your patronage!');
+
+    if (business.footnote.trim().isNotEmpty) {
+      buffer.writeln();
+      buffer.writeln(business.footnote.trim());
+    }
+
+    return buffer.toString();
+  }
+
+  /// Sends the formatted receipt summary directly to the customer's
+  /// WhatsApp chat.
+  Future<ShareOperationResult> shareReceiptDetailsToCustomer({
+    required Receipt receipt,
+    required BusinessSettings business,
+  }) async {
+    final message = _buildReceiptMessage(receipt, business);
+    return openWhatsAppChat(
+      phoneNumber: receipt.customerWhatsapp,
+      message: message,
     );
   }
 }

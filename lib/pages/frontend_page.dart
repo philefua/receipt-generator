@@ -667,6 +667,8 @@ class _FrontendPageState extends State<FrontendPage> {
   }
 }
 
+/// Post-checkout dialog showing the full receipt preview, with independent
+/// Print and Share actions the cashier can trigger in any order.
 class _ReceiptResultDialog extends StatefulWidget {
   final Receipt receipt;
 
@@ -677,7 +679,6 @@ class _ReceiptResultDialog extends StatefulWidget {
 }
 
 class _ReceiptResultDialogState extends State<_ReceiptResultDialog> {
-  final GlobalKey _previewKey = GlobalKey();
   bool _isPrinting = false;
   bool _isSharing = false;
 
@@ -698,13 +699,13 @@ class _ReceiptResultDialogState extends State<_ReceiptResultDialog> {
     );
   }
 
- Future<void> _handleShare() async {
+  Future<void> _handleShare(AppStateController controller) async {
     setState(() => _isSharing = true);
     try {
-      final result = await WhatsappShareService.instance.shareReceiptImage(
-        boundaryKey: _previewKey,
-        receiptCode: widget.receipt.receiptCode,
-        captionPhoneNumber: widget.receipt.customerWhatsapp,
+      final result = await WhatsappShareService.instance
+          .shareReceiptDetailsToCustomer(
+        receipt: widget.receipt,
+        business: controller.settings,
       );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -738,12 +739,9 @@ class _ReceiptResultDialogState extends State<_ReceiptResultDialog> {
       content: SizedBox(
         width: 380,
         child: SingleChildScrollView(
-          child: RepaintBoundary(
-            key: _previewKey,
-            child: ReceiptPreviewWidget(
-              receipt: widget.receipt,
-              business: controller.settings,
-            ),
+          child: ReceiptPreviewWidget(
+            receipt: widget.receipt,
+            business: controller.settings,
           ),
         ),
       ),
@@ -760,7 +758,7 @@ class _ReceiptResultDialogState extends State<_ReceiptResultDialog> {
           label: Text(_isPrinting ? 'Printing...' : 'Print'),
         ),
         TextButton.icon(
-          onPressed: _isSharing ? null : _handleShare,
+          onPressed: _isSharing ? null : () => _handleShare(controller),
           icon: _isSharing
               ? const SizedBox(
                   width: 16,
