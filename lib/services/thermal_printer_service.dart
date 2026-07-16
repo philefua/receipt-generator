@@ -87,20 +87,26 @@ Future<List<PrinterDevice>> getPairedDevices() async {
         .toList(growable: false);
   }
 
-  Future<PrinterOperationResult> connect(
+Future<PrinterOperationResult> connect(
     String address, {
     String? name,
   }) async {
     try {
-      if (_connectedAddress != null && _connectedAddress != address) {
-        await disconnect();
+      // Always force a clean disconnect first, regardless of what our
+      // own state thinks. The plugin's native Bluetooth socket can retain
+      // an "already connected" state across app restarts or after a
+      // silent connection drop, which then blocks a fresh connect() call
+      // from succeeding. This is cheap and harmless when there is nothing
+      // to disconnect.
+      try {
+        await PrintBluetoothThermal.disconnect;
+      } catch (_) {
+        // No existing connection to tear down — safe to ignore.
       }
+      _connectedAddress = null;
+      _connectedName = null;
 
-      final bool alreadyConnected =
-          await PrintBluetoothThermal.connectionStatus;
-      if (alreadyConnected && _connectedAddress == address) {
-        return PrinterOperationResult.ok('Already connected.');
-      }
+      await Future<void>.delayed(const Duration(milliseconds: 300));
 
       final bool result = await PrintBluetoothThermal.connect(
         macPrinterAddress: address,
