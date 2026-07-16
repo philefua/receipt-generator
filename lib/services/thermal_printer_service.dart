@@ -2,11 +2,15 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:esc_pos_utils_plus/esc_pos_utils_plus.dart';
-import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart';
+import 'package:flutter_classic_bluetooth/flutter_classic_bluetooth.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../models/business_settings.dart';
 import '../models/receipt.dart';
+
+/// Standard Serial Port Profile (SPP) UUID used by virtually all classic
+/// Bluetooth thermal receipt printers, including Xprinter models.
+const String _sppUuid = '00001101-0000-1000-8000-00805F9B34FB';
 
 /// Represents a discoverable/paired Bluetooth printer.
 class PrinterDevice {
@@ -33,9 +37,9 @@ class PrinterOperationResult {
       PrinterOperationResult(success: false, message: message);
 }
 
-/// Handles Bluetooth Classic (SPP) discovery/connection and ESC/POS
+/// Handles Bluetooth Classic (RFCOMM/SPP) discovery/connection and ESC/POS
 /// document generation for 58mm thermal receipt printers, using
-/// flutter_bluetooth_serial for the transport layer.
+/// flutter_classic_bluetooth for the transport layer.
 class ThermalPrinterService {
   ThermalPrinterService._internal();
 
@@ -44,12 +48,13 @@ class ThermalPrinterService {
 
   static const int _paperWidthChars = 32;
 
-  BluetoothConnection? _connection;
+  final FlutterClassicBluetooth _bluetooth = FlutterClassicBluetooth();
+
+  BtcConnection? _connection;
   String? _connectedAddress;
   String? _connectedName;
 
-  bool get isConnected =>
-      _connection != null && (_connection!.isConnected);
+  bool get isConnected => _connection != null;
 
   String? get connectedAddress => _connectedAddress;
 
@@ -80,19 +85,15 @@ class ThermalPrinterService {
   }
 
   Future<List<PrinterDevice>> getPairedDevices() async {
-    final List<BluetoothDevice> devices =
-        await FlutterBluetoothSerial.instance.getBondedDevices();
+    final List<BtcDevice> devices = await _bluetooth.getPairedDevices();
     return devices
-        .map((d) => PrinterDevice(
-              name: d.name ?? 'Unnamed device',
-              address: d.address,
-            ))
+        .map((d) => PrinterDevice(name: d.displayName, address: d.address))
         .toList(growable: false);
   }
 
-  /// Connects to the printer at [address] using Bluetooth Classic SPP.
-  /// Closes any existing connection first only if it's to a different
-  /// address than the one being requested.
+  /// Connects to the printer at [address] using Bluetooth Classic RFCOMM
+  /// (SPP). Closes any existing connection first only if it's to a
+  /// different address than the one being requested.
   Future<PrinterOperationResult> connect(
     String address, {
     String? name,
@@ -104,14 +105,14 @@ class ThermalPrinterService {
         await disconnect();
       }
 
-      if (_connection != null &&
-          _connection!.isConnected &&
-          _connectedAddress == address) {
+      if (_connection != null && _connectedAddress == address) {
         return PrinterOperationResult.ok('Already connected.');
       }
 
-      final BluetoothConnection connection =
-          await BluetoothConnection.toAddress(address);
+      final BtcConnection connection = await _bluetooth.connect(
+        address: address,
+        uuid: _sppUuid,
+      );
 
       _connection = connection;
       _connectedAddress = address;
@@ -135,7 +136,7 @@ class ThermalPrinterService {
 
   Future<PrinterOperationResult> disconnect() async {
     try {
-      await _connection?.close();
+      await _connection?.finish();
       _connection = null;
       _connectedAddress = null;
       _connectedName = null;
@@ -149,13 +150,7 @@ class ThermalPrinterService {
   }
 
   Future<bool> checkConnectionStatus() async {
-    final connected = _connection != null && _connection!.isConnected;
-    if (!connected) {
-      _connection = null;
-      _connectedAddress = null;
-      _connectedName = null;
-    }
-    return connected;
+    return _connection != null;
   }
 
   Future<List<int>> buildReceiptBytes({
@@ -413,7 +408,7 @@ class ThermalPrinterService {
     return '$y-$m-$d $h:$min';
   }
 
-  /// Sends [bytes] directly over the open BluetoothConnection socket.
+  /// Sends [bytes] over the open RFCOMM connection.
   Future<PrinterOperationResult> printBytes(List<int> bytes) async {
     try {
       bool connected = await checkConnectionStatus();
@@ -433,9 +428,7 @@ class ThermalPrinterService {
       }
 
       final Uint8List payload = Uint8List.fromList(bytes);
-
-      _connection!.output.add(payload);
-      await _connection!.output.allSent;
+      await _connection!.output.add(payload);
 
       return PrinterOperationResult.ok('Receipt sent to printer.');
     } catch (e) {
