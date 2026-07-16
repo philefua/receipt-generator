@@ -173,7 +173,7 @@ class _BackendPageState extends State<BackendPage> {
 
       if (!context.mounted) return;
 
-     await SharePlus.instance.share(
+      await SharePlus.instance.share(
         ShareParams(
           files: [XFile(filePath, name: fileName)],
           text: 'Receipt history export ($fileName)',
@@ -811,6 +811,133 @@ class _ProductsSection extends StatelessWidget {
     }
   }
 
+  Future<void> _showBulkImportDialog(BuildContext context) async {
+    final bulkTextController = TextEditingController();
+    final formKey = GlobalKey<FormState>();
+
+    await showDialog(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Bulk Import Products'),
+          content: SizedBox(
+            width: 420,
+            child: Form(
+              key: formKey,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Enter one product per line, as:\nProduct Name, Unit Price',
+                    style: TextStyle(fontSize: 13, color: Colors.black54),
+                  ),
+                  const SizedBox(height: 12),
+                  TextFormField(
+                    controller: bulkTextController,
+                    maxLines: 12,
+                    minLines: 6,
+                    decoration: const InputDecoration(
+                      hintText:
+                          'Custom T-Shirt Print, 3500\nVinyl Banner (per sqm), 2500\nBusiness Card (100 pcs), 5000',
+                      border: OutlineInputBorder(),
+                      alignLabelWithHint: true,
+                    ),
+                    validator: (value) => (value == null || value.trim().isEmpty)
+                        ? 'Enter at least one product line'
+                        : null,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                if (!formKey.currentState!.validate()) return;
+
+                final controller = dialogContext.read<AppStateController>();
+                final lines = bulkTextController.text.split('\n');
+
+                int addedCount = 0;
+                final List<String> skippedLines = [];
+
+                for (final rawLine in lines) {
+                  final line = rawLine.trim();
+                  if (line.isEmpty) continue;
+
+                  final commaIndex = line.lastIndexOf(',');
+                  if (commaIndex == -1) {
+                    skippedLines.add('$line (missing comma)');
+                    continue;
+                  }
+
+                  final name = line.substring(0, commaIndex).trim();
+                  final priceText = line.substring(commaIndex + 1).trim();
+                  final price = double.tryParse(priceText);
+
+                  if (name.isEmpty) {
+                    skippedLines.add('$line (missing name)');
+                    continue;
+                  }
+                  if (price == null || price < 0) {
+                    skippedLines.add('$line (invalid price)');
+                    continue;
+                  }
+
+                  await controller.addProductPreset(name: name, price: price);
+                  addedCount++;
+                }
+
+                if (dialogContext.mounted) {
+                  Navigator.of(dialogContext).pop();
+                }
+
+                if (context.mounted) {
+                  final summary = StringBuffer('$addedCount product(s) added.');
+                  if (skippedLines.isNotEmpty) {
+                    summary.write(' ${skippedLines.length} line(s) skipped.');
+                  }
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(summary.toString()),
+                      backgroundColor: skippedLines.isEmpty
+                          ? Colors.green.shade700
+                          : Colors.orange.shade700,
+                    ),
+                  );
+
+                  if (skippedLines.isNotEmpty) {
+                    showDialog(
+                      context: context,
+                      builder: (_) => AlertDialog(
+                        title: const Text('Skipped Lines'),
+                        content: SingleChildScrollView(
+                          child: Text(skippedLines.join('\n')),
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.of(context).pop(),
+                            child: const Text('OK'),
+                          ),
+                        ],
+                      ),
+                    );
+                  }
+                }
+              },
+              child: const Text('Import'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final controller = context.watch<AppStateController>();
@@ -831,10 +958,20 @@ class _ProductsSection extends StatelessWidget {
                   'Preset Products',
                   style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                 ),
-                ElevatedButton.icon(
-                  onPressed: () => _showProductDialog(context),
-                  icon: const Icon(Icons.add),
-                  label: const Text('Add Product'),
+                Wrap(
+                  spacing: 8,
+                  children: [
+                    OutlinedButton.icon(
+                      onPressed: () => _showBulkImportDialog(context),
+                      icon: const Icon(Icons.playlist_add_outlined),
+                      label: const Text('Bulk Import'),
+                    ),
+                    ElevatedButton.icon(
+                      onPressed: () => _showProductDialog(context),
+                      icon: const Icon(Icons.add),
+                      label: const Text('Add Product'),
+                    ),
+                  ],
                 ),
               ],
             ),
