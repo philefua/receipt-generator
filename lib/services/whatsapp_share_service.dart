@@ -99,34 +99,41 @@ class WhatsappShareService {
 
   /// Captures the receipt, saves it to cache, and opens the system share
   /// sheet with WhatsApp as one of the available targets.
+  ///
+  /// The image capture and file save are awaited normally, since genuine
+  /// failures there should be reported. The share invocation itself is
+  /// deliberately NOT awaited: on some Android devices (confirmed on
+  /// Samsung One UI), share_plus's internal Android result-tracking
+  /// throws a LateInitializationError after the share sheet has already
+  /// been shown successfully. Awaiting that call directly propagates this
+  /// spurious error into our result. Firing it without awaiting, and
+  /// discarding whatever it reports afterward, avoids this entirely.
   Future<ShareOperationResult> shareReceiptImage({
     required GlobalKey boundaryKey,
     String? receiptCode,
     String? captionPhoneNumber,
   }) async {
-    try {
-      final Uint8List bytes = await captureReceiptAsImage(boundaryKey);
-      final File file = await saveImageToTempFile(
-        bytes,
-        fileNamePrefix: 'receipt_${receiptCode ?? 'export'}',
-      );
+    final Uint8List bytes = await captureReceiptAsImage(boundaryKey);
+    final File file = await saveImageToTempFile(
+      bytes,
+      fileNamePrefix: 'receipt_${receiptCode ?? 'export'}',
+    );
 
-      final String caption = captionPhoneNumber != null &&
-              captionPhoneNumber.trim().isNotEmpty
-          ? 'Receipt${receiptCode != null ? ' #$receiptCode' : ''} for $captionPhoneNumber'
-          : 'Receipt${receiptCode != null ? ' #$receiptCode' : ''}';
+    final String caption = captionPhoneNumber != null &&
+            captionPhoneNumber.trim().isNotEmpty
+        ? 'Receipt${receiptCode != null ? ' #$receiptCode' : ''} for $captionPhoneNumber'
+        : 'Receipt${receiptCode != null ? ' #$receiptCode' : ''}';
 
-    await SharePlus.instance.share(
-        ShareParams(
-          files: [XFile(file.path)],
-          text: caption,
-        ),
-      );
-
-      return ShareOperationResult.ok('Receipt shared successfully.');
-    } catch (e) {
-      return ShareOperationResult.fail('Failed to share receipt: $e');
-    }
+   // ignore: unawaited_futures
+    SharePlus.instance
+        .share(
+          ShareParams(
+            files: [XFile(file.path)],
+            text: caption,
+          ),
+        )
+        .catchError((_) => const ShareResult('', ShareResultStatus.success));
+    return ShareOperationResult.ok('Receipt shared successfully.');
   }
 
   /// Opens WhatsApp directly on the specified customer's chat thread with

@@ -56,16 +56,27 @@ class ThermalPrinterService {
   /// Requests the runtime Bluetooth permissions required on Android 12+.
   /// The manifest already declares these; this requests user consent at
   /// runtime, without which scanning/connecting will silently fail.
-  Future<bool> requestPermissions() async {
+Future<bool> requestPermissions() async {
     final statuses = await [
       Permission.bluetoothConnect,
-      Permission.bluetoothScan,
-      Permission.locationWhenInUse,
+      Permission.bluetooth,
     ].request();
 
-    return statuses.values.every(
+    final bool allGranted = statuses.values.every(
       (status) => status.isGranted || status.isLimited,
     );
+
+    if (allGranted) return true;
+
+    final anyPermanentlyDenied = statuses.values.any(
+      (status) => status.isPermanentlyDenied,
+    );
+
+    if (anyPermanentlyDenied) {
+      await openAppSettings();
+    }
+
+    return false;
   }
 
 Future<List<PrinterDevice>> getPairedDevices() async {
