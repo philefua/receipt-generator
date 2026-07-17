@@ -35,6 +35,8 @@ class _FrontendPageState extends State<FrontendPage> {
   String _paymentMethod = 'Cash';
   bool _customerFieldsValid = false;
 
+  static final RegExp _whatsappFormatRegex = RegExp(r'^\+\d{8,15}$');
+
   @override
   void initState() {
     super.initState();
@@ -43,9 +45,13 @@ class _FrontendPageState extends State<FrontendPage> {
     _depositController.addListener(() => setState(() {}));
   }
 
+  bool _isValidWhatsappFormat(String value) {
+    return _whatsappFormatRegex.hasMatch(value.trim());
+  }
+
   void _revalidateCustomerFields() {
     final valid = _customerNameController.text.trim().isNotEmpty &&
-        _customerWhatsappController.text.trim().isNotEmpty;
+        _isValidWhatsappFormat(_customerWhatsappController.text);
     if (valid != _customerFieldsValid) {
       setState(() => _customerFieldsValid = valid);
     }
@@ -260,10 +266,17 @@ class _FrontendPageState extends State<FrontendPage> {
                   labelText: 'WhatsApp Number',
                   border: OutlineInputBorder(),
                   prefixIcon: Icon(Icons.chat_outlined),
+                  hintText: 'e.g. +2348023920619',
                 ),
-                validator: (value) => (value == null || value.trim().isEmpty)
-                    ? 'WhatsApp number is required'
-                    : null,
+                validator: (value) {
+                  if (value == null || value.trim().isEmpty) {
+                    return 'WhatsApp number is required';
+                  }
+                  if (!_isValidWhatsappFormat(value)) {
+                    return 'Enter number in international format, e.g. +2348023920619';
+                  }
+                  return null;
+                },
               ),
             ],
           ),
@@ -667,8 +680,6 @@ class _FrontendPageState extends State<FrontendPage> {
   }
 }
 
-/// Post-checkout dialog showing the full receipt preview, with independent
-/// Print and Share actions the cashier can trigger in any order.
 class _ReceiptResultDialog extends StatefulWidget {
   final Receipt receipt;
 
