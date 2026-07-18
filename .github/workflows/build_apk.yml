@@ -30,13 +30,13 @@ jobs:
       - name: Generate Core Database Models
         run: dart run build_runner build --delete-conflicting-outputs
 
-      - name: Decode Release Keystore
+    - name: Decode Release Keystore
         run: |
-          echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 --decode > android/app/receipt_generator_release.keystore
+          echo "${{ secrets.RELEASE_KEYSTORE_BASE64_V2 }}" | base64 --decode > android/app/receipt_generator_release.keystore
 
-      - name: Compile Optimized Release APK
+     - name: Compile Optimized Release APK
         env:
-          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD_V2 }}
           RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
         run: flutter build apk --release
 
