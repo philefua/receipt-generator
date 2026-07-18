@@ -43,6 +43,9 @@ class BusinessSettings extends HiveObject {
   @HiveField(12)
   String footnote;
 
+  @HiveField(13)
+  String googleSheetId;
+
   BusinessSettings({
     this.businessName = 'My Business',
     this.address = '',
@@ -57,5 +60,6 @@ class BusinessSettings extends HiveObject {
     this.instagram = '',
     this.facebook = '',
     this.footnote = '',
+    this.googleSheetId = '',
   });
 }

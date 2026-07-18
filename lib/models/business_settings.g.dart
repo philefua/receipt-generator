@@ -30,13 +30,14 @@ class BusinessSettingsAdapter extends TypeAdapter<BusinessSettings> {
       instagram: fields[10] as String,
       facebook: fields[11] as String,
       footnote: fields[12] as String,
+      googleSheetId: fields[13] as String,
     );
   }
 
   @override
   void write(BinaryWriter writer, BusinessSettings obj) {
     writer
-      ..writeByte(13)
+      ..writeByte(14)
       ..writeByte(0)
       ..write(obj.businessName)
       ..writeByte(1)
@@ -62,7 +63,9 @@ class BusinessSettingsAdapter extends TypeAdapter<BusinessSettings> {
       ..writeByte(11)
       ..write(obj.facebook)
       ..writeByte(12)
-      ..write(obj.footnote);
+      ..write(obj.footnote)
+      ..writeByte(13)
+      ..write(obj.googleSheetId);
   }
 
   @override

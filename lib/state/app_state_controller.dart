@@ -85,6 +85,12 @@ class AppStateController extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> updateGoogleSheetId(String sheetIdOrUrl) async {
+    settings.googleSheetId = sheetIdOrUrl.trim();
+    await settings.save();
+    notifyListeners();
+  }
+
   List<ProductPreset> get productPresets =>
       List.unmodifiable(_productsBox.values.where((p) => p.isActive));
 
@@ -123,6 +129,51 @@ class AppStateController extends ChangeNotifier {
     if (preset == null) return;
     preset.isActive = false;
     await preset.save();
+    notifyListeners();
+  }
+
+  /// Replaces all active preset products with [products] — used by the
+  /// Google Sheets sync to make local presets match the remote sheet
+  /// exactly. Existing products not present in the new list are
+  /// deactivated (soft-deleted, consistent with the rest of the app's
+  /// deletion behavior), rather than hard-deleted.
+  Future<void> replaceProductPresetsFromSync(
+    List<MapEntry<String, double>> products,
+  ) async {
+    final existingByName = <String, ProductPreset>{
+      for (final p in _productsBox.values.where((p) => p.isActive))
+        p.name.trim().toLowerCase(): p,
+    };
+
+    final incomingNames = <String>{};
+
+    for (final entry in products) {
+      final name = entry.key.trim();
+      final price = entry.value;
+      final key = name.toLowerCase();
+      incomingNames.add(key);
+
+      final existing = existingByName[key];
+      if (existing != null) {
+        existing.price = price;
+        await existing.save();
+      } else {
+        final preset = ProductPreset(
+          id: const Uuid().v4(),
+          name: name,
+          price: price,
+        );
+        await _productsBox.put(preset.id, preset);
+      }
+    }
+
+    for (final entry in existingByName.entries) {
+      if (!incomingNames.contains(entry.key)) {
+        entry.value.isActive = false;
+        await entry.value.save();
+      }
+    }
+
     notifyListeners();
   }
 
@@ -246,12 +297,15 @@ class AppStateController extends ChangeNotifier {
             ))
         .toList(growable: false);
 
-    final total = totalPayable;
-    final resolvedDeposit = (depositPaid == null || depositPaid <= 0 || depositPaid >= total)
-        ? total
-        : depositPaid;
-    final resolvedBalance =
-        double.parse((total - resolvedDeposit).toStringAsFixed(2));
+    final resolvedTotalPayable = totalPayable;
+    final resolvedDepositPaid = (depositPaid == null || depositPaid <= 0)
+        ? resolvedTotalPayable
+        : (depositPaid > resolvedTotalPayable
+            ? resolvedTotalPayable
+            : depositPaid);
+    final resolvedBalanceOwed = double.parse(
+      (resolvedTotalPayable - resolvedDepositPaid).toStringAsFixed(2),
+    );
 
     final receipt = Receipt(
       receiptCode: code,
@@ -260,15 +314,15 @@ class AppStateController extends ChangeNotifier {
       subtotal: subtotal,
       discountPercent: _discountPercent,
       discountAmount: discountAmount,
-      totalPayable: total,
+      totalPayable: resolvedTotalPayable,
       cashierName: cashierName,
       isLocked: true,
       customerName: customerName.trim(),
       customerWhatsapp: customerWhatsapp.trim(),
       paymentMethod: paymentMethod,
       couponReference: couponReference.trim(),
-      depositPaid: resolvedDeposit,
-      balanceOwed: resolvedBalance < 0 ? 0 : resolvedBalance,
+      depositPaid: resolvedDepositPaid,
+      balanceOwed: resolvedBalanceOwed < 0 ? 0 : resolvedBalanceOwed,
     );
 
     await _receiptsBox.add(receipt);

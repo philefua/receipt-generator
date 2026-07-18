@@ -29,6 +29,12 @@ dependencies:
   screenshot: ^3.0.0           # render receipt widget -> PNG for sharing/printing
   url_launcher: ^6.3.1         # deep-link into a specific WhatsApp chat thread
 
+ # --- Google Drive / Sheets Auto-Backup & Remote Product Sync ---
+  google_sign_in: ^6.2.1       # manager Google account sign-in
+  googleapis: ^13.2.0          # Drive + Sheets API clients
+  googleapis_auth: ^1.6.0      # auth helper bridging google_sign_in to googleapis
+  http: ^1.2.0                 # authenticated HTTP client for Drive/Sheets requests
+
   # --- History Export ---
   excel: ^4.0.6
   csv: ^6.0.0
