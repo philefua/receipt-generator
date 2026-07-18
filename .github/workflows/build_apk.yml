@@ -24,18 +24,20 @@ jobs:
         with:
           channel: 'stable'
 
-      - name: Force Clean App Scaffolding Setup
-        run: |
-          rm -rf android
-          flutter create . --platforms=android
-
       - name: Fetch Remote Package Dependencies
         run: flutter pub get
 
       - name: Generate Core Database Models
         run: dart run build_runner build --delete-conflicting-outputs
 
+      - name: Decode Release Keystore
+        run: |
+          echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 --decode > android/app/receipt_generator_release.keystore
+
       - name: Compile Optimized Release APK
+        env:
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
         run: flutter build apk --release
 
       - name: Upload Production Artifact
@@ -43,4 +45,3 @@ jobs:
         with:
           name: Printiverse-ReceiptManager
           path: build/app/outputs/flutter-apk/app-release.apk
-
