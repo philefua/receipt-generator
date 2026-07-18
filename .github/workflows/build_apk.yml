@@ -30,7 +30,7 @@ jobs:
       - name: Generate Core Database Models
         run: dart run build_runner build --delete-conflicting-outputs
 
-     - name: Decode Release Keystore
+      - name: Decode Release Keystore
         run: |
           echo "${{ secrets.RELEASE_KEYSTORE_BASE64_V2 }}" | grep -v "CERTIFICATE" | tr -d '\r' | base64 --decode > android/app/receipt_generator_release.keystore
 
