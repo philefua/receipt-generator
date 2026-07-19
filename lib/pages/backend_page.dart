@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:excel/excel.dart' as xls;
 import 'package:flutter/material.dart';
@@ -8,6 +9,8 @@ import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../models/product_preset.dart';
+import '../services/google_drive_service.dart';
+import '../services/google_sheets_service.dart';
 import '../state/app_state_controller.dart';
 
 class BackendPage extends StatefulWidget {
@@ -98,71 +101,75 @@ class _BackendPageState extends State<BackendPage> {
     );
   }
 
+  Future<Uint8List> _buildHistoryExcelBytes(AppStateController controller) async {
+    final receipts = controller.receiptHistory;
+    final workbook = xls.Excel.createExcel();
+    const sheetName = 'Receipt History';
+    final sheet = workbook[sheetName];
+    if (workbook.getDefaultSheet() != null &&
+        workbook.getDefaultSheet() != sheetName) {
+      workbook.delete(workbook.getDefaultSheet()!);
+    }
+
+    final headers = [
+      'Receipt Code',
+      'Date',
+      'Time',
+      'Cashier',
+      'Customer',
+      'Customer WhatsApp',
+      'Items',
+      'Subtotal',
+      'Discount %',
+      'Discount Amount',
+      'Coupon Reference',
+      'Total Payable',
+      'Deposit Paid',
+      'Balance Owed',
+      'Payment Method',
+    ];
+    sheet.appendRow(headers.map((h) => xls.TextCellValue(h)).toList());
+
+    final dateFormat = DateFormat('yyyy-MM-dd');
+    final timeFormat = DateFormat('HH:mm:ss');
+
+    for (final receipt in receipts) {
+      final itemsSummary = receipt.items
+          .map((item) => '${item.name} x${item.quantity}')
+          .join(', ');
+
+      sheet.appendRow([
+        xls.TextCellValue(receipt.receiptCode),
+        xls.TextCellValue(dateFormat.format(receipt.issuedAt)),
+        xls.TextCellValue(timeFormat.format(receipt.issuedAt)),
+        xls.TextCellValue(receipt.cashierName),
+        xls.TextCellValue(receipt.customerName),
+        xls.TextCellValue(receipt.customerWhatsapp),
+        xls.TextCellValue(itemsSummary),
+        xls.DoubleCellValue(receipt.subtotal),
+        xls.DoubleCellValue(receipt.discountPercent),
+        xls.DoubleCellValue(receipt.discountAmount),
+        xls.TextCellValue(receipt.couponReference),
+        xls.DoubleCellValue(receipt.totalPayable),
+        xls.DoubleCellValue(receipt.depositPaid),
+        xls.DoubleCellValue(receipt.balanceOwed),
+        xls.TextCellValue(receipt.paymentMethod),
+      ]);
+    }
+
+    final bytes = workbook.encode();
+    if (bytes == null) {
+      throw Exception('Failed to encode Excel file.');
+    }
+    return Uint8List.fromList(bytes);
+  }
+
   Future<void> _exportHistoryToExcel(BuildContext context) async {
     final controller = context.read<AppStateController>();
     setState(() => _isExporting = true);
 
     try {
-      final receipts = controller.receiptHistory;
-      final workbook = xls.Excel.createExcel();
-      const sheetName = 'Receipt History';
-      final sheet = workbook[sheetName];
-      if (workbook.getDefaultSheet() != null &&
-          workbook.getDefaultSheet() != sheetName) {
-        workbook.delete(workbook.getDefaultSheet()!);
-      }
-
-      final headers = [
-        'Receipt Code',
-        'Date',
-        'Time',
-        'Cashier',
-        'Customer',
-        'Customer WhatsApp',
-        'Items',
-        'Subtotal',
-        'Discount %',
-        'Discount Amount',
-        'Coupon Reference',
-        'Total Payable',
-        'Deposit Paid',
-        'Balance Owed',
-        'Payment Method',
-      ];
-      sheet.appendRow(headers.map((h) => xls.TextCellValue(h)).toList());
-
-      final dateFormat = DateFormat('yyyy-MM-dd');
-      final timeFormat = DateFormat('HH:mm:ss');
-
-      for (final receipt in receipts) {
-        final itemsSummary = receipt.items
-            .map((item) => '${item.name} x${item.quantity}')
-            .join(', ');
-
-        sheet.appendRow([
-          xls.TextCellValue(receipt.receiptCode),
-          xls.TextCellValue(dateFormat.format(receipt.issuedAt)),
-          xls.TextCellValue(timeFormat.format(receipt.issuedAt)),
-          xls.TextCellValue(receipt.cashierName),
-          xls.TextCellValue(receipt.customerName),
-          xls.TextCellValue(receipt.customerWhatsapp),
-          xls.TextCellValue(itemsSummary),
-          xls.DoubleCellValue(receipt.subtotal),
-          xls.DoubleCellValue(receipt.discountPercent),
-          xls.DoubleCellValue(receipt.discountAmount),
-          xls.TextCellValue(receipt.couponReference),
-          xls.DoubleCellValue(receipt.totalPayable),
-          xls.DoubleCellValue(receipt.depositPaid),
-          xls.DoubleCellValue(receipt.balanceOwed),
-          xls.TextCellValue(receipt.paymentMethod),
-        ]);
-      }
-
-      final bytes = workbook.encode();
-      if (bytes == null) {
-        throw Exception('Failed to encode Excel file.');
-      }
-
+      final bytes = await _buildHistoryExcelBytes(controller);
       final fileName =
           'receipt_history_${DateFormat('yyyyMMdd_HHmmss').format(DateTime.now())}.xlsx';
 
@@ -185,7 +192,7 @@ class _BackendPageState extends State<BackendPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            'Exported ${receipts.length} receipts. Choose "Save to Downloads" or your preferred app.',
+            'Exported ${controller.receiptHistory.length} receipts. Choose "Save to Downloads" or your preferred app.',
           ),
           backgroundColor: Colors.green.shade700,
         ),
@@ -254,6 +261,12 @@ class _BackendPageState extends State<BackendPage> {
                           _ProductsSection(width: constraints.maxWidth),
                           const SizedBox(height: 16),
                           _buildExportCard(context),
+                          const SizedBox(height: 16),
+                          _GoogleSyncCard(
+                            onBuildExcelBytes: () =>
+                                _buildHistoryExcelBytes(
+                                    context.read<AppStateController>()),
+                          ),
                         ],
                       ),
                     ),
@@ -274,6 +287,11 @@ class _BackendPageState extends State<BackendPage> {
                 _ProductsSection(width: constraints.maxWidth),
                 const SizedBox(height: 16),
                 _buildExportCard(context),
+                const SizedBox(height: 16),
+                _GoogleSyncCard(
+                  onBuildExcelBytes: () =>
+                      _buildHistoryExcelBytes(context.read<AppStateController>()),
+                ),
               ],
             ),
           );
@@ -1054,6 +1072,295 @@ class _ProductsSection extends StatelessWidget {
                   );
                 },
               ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Manages Google account connection, the linked product Sheet, and manual
+/// Backup Now / Sync Products Now actions. Silent sign-in is attempted on
+/// first build so a previously-connected account is restored automatically
+/// without prompting the manager again.
+class _GoogleSyncCard extends StatefulWidget {
+  final Future<Uint8List> Function() onBuildExcelBytes;
+
+  const _GoogleSyncCard({required this.onBuildExcelBytes});
+
+  @override
+  State<_GoogleSyncCard> createState() => _GoogleSyncCardState();
+}
+
+class _GoogleSyncCardState extends State<_GoogleSyncCard> {
+  bool _isSigningIn = false;
+  bool _isBackingUp = false;
+  bool _isSyncing = false;
+  bool _checkedSilentSignIn = false;
+  late final TextEditingController _sheetController;
+
+  @override
+  void initState() {
+    super.initState();
+    _sheetController = TextEditingController();
+    _attemptSilentSignIn();
+  }
+
+  Future<void> _attemptSilentSignIn() async {
+    await GoogleDriveService.instance.trySilentSignIn();
+    if (mounted) {
+      setState(() => _checkedSilentSignIn = true);
+    }
+  }
+
+  @override
+  void dispose() {
+    _sheetController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _handleSignIn() async {
+    setState(() => _isSigningIn = true);
+    final result = await GoogleDriveService.instance.signIn();
+    if (!mounted) return;
+    setState(() => _isSigningIn = false);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(result.message),
+        backgroundColor:
+            result.success ? Colors.green.shade700 : Colors.red.shade700,
+      ),
+    );
+  }
+
+  Future<void> _handleSignOut() async {
+    await GoogleDriveService.instance.signOut();
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _handleBackupNow() async {
+    setState(() => _isBackingUp = true);
+    try {
+      final bytes = await widget.onBuildExcelBytes();
+      final fileName =
+          'receipt_history_backup_${DateFormat('yyyyMMdd_HHmmss').format(DateTime.now())}.xlsx';
+      final result = await GoogleDriveService.instance.uploadExcelBackup(
+        bytes: bytes,
+        fileName: fileName,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(result.message),
+          backgroundColor:
+              result.success ? Colors.green.shade700 : Colors.red.shade700,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Backup failed: $e'),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _isBackingUp = false);
+    }
+  }
+
+  Future<void> _handleSaveSheetId(AppStateController controller) async {
+    await controller.updateGoogleSheetId(_sheetController.text.trim());
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Google Sheet link saved.')),
+    );
+  }
+
+  Future<void> _handleSyncNow(AppStateController controller) async {
+    final sheetId = controller.settings.googleSheetId;
+    if (sheetId.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Paste and save a Google Sheet link first.'),
+        ),
+      );
+      return;
+    }
+
+    setState(() => _isSyncing = true);
+    try {
+      final result = await GoogleSheetsService.instance.fetchProducts(
+        sheetIdOrUrl: sheetId,
+      );
+      if (!result.success) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(result.message),
+            backgroundColor: Colors.red.shade700,
+          ),
+        );
+        return;
+      }
+
+      await controller.replaceProductPresetsFromSync(
+        result.products.map((p) => MapEntry(p.name, p.price)).toList(),
+      );
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(result.message),
+          backgroundColor: Colors.green.shade700,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Sync failed: $e'),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _isSyncing = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = context.watch<AppStateController>();
+    final isSignedIn = GoogleDriveService.instance.isSignedIn;
+    final signedInEmail = GoogleDriveService.instance.signedInEmail;
+
+    if (_sheetController.text.isEmpty &&
+        controller.settings.googleSheetId.isNotEmpty) {
+      _sheetController.text = controller.settings.googleSheetId;
+    }
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              'Google Drive Backup & Product Sync',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Automatically back up receipt history and keep preset products in sync with a Google Sheet.',
+              style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
+            ),
+            const SizedBox(height: 16),
+            if (!_checkedSilentSignIn)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 8),
+                child: Center(child: CircularProgressIndicator()),
+              )
+            else if (!isSignedIn)
+              ElevatedButton.icon(
+                onPressed: _isSigningIn ? null : _handleSignIn,
+                icon: _isSigningIn
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.g_mobiledata_outlined, size: 24),
+                label: Text(
+                  _isSigningIn ? 'Connecting...' : 'Connect Google Account',
+                ),
+              )
+            else ...[
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.green.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.green.shade200),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.check_circle, color: Colors.green.shade700),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Connected: ${signedInEmail ?? ""}',
+                        style: TextStyle(color: Colors.green.shade800),
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: _handleSignOut,
+                      child: const Text('Disconnect'),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              ElevatedButton.icon(
+                onPressed: _isBackingUp ? null : _handleBackupNow,
+                icon: _isBackingUp
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.backup_outlined),
+                label: Text(_isBackingUp ? 'Backing Up...' : 'Backup Now'),
+              ),
+              const SizedBox(height: 20),
+              const Divider(),
+              const SizedBox(height: 8),
+              const Text(
+                'Remote Product Sheet',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Paste the link to a Google Sheet with Product Name in column A and Unit Price in column B.',
+                style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: _sheetController,
+                decoration: const InputDecoration(
+                  labelText: 'Google Sheet Link or ID',
+                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.table_chart_outlined),
+                ),
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => _handleSaveSheetId(controller),
+                      child: const Text('Save Link'),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      onPressed: _isSyncing
+                          ? null
+                          : () => _handleSyncNow(controller),
+                      icon: _isSyncing
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child:
+                                  CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.sync_outlined),
+                      label: Text(_isSyncing ? 'Syncing...' : 'Sync Now'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
           ],
         ),
       ),
