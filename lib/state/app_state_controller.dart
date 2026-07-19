@@ -91,6 +91,39 @@ class AppStateController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Records that a Drive backup just completed successfully, used by the
+  /// automatic daily check to know when it last ran.
+  Future<void> recordBackupCompleted() async {
+    settings.lastBackupAt = DateTime.now();
+    await settings.save();
+    notifyListeners();
+  }
+
+  /// Records that a Sheets product sync just completed successfully.
+  Future<void> recordSyncCompleted() async {
+    settings.lastSyncAt = DateTime.now();
+    await settings.save();
+    notifyListeners();
+  }
+
+  /// True if 24+ hours have passed since the last successful backup, or
+  /// if a backup has never run at all.
+  bool get isBackupDue {
+    final last = settings.lastBackupAt;
+    if (last == null) return true;
+    return DateTime.now().difference(last) >= const Duration(hours: 24);
+  }
+
+  /// True if 24+ hours have passed since the last successful sync, or if
+  /// a sync has never run at all. Only meaningful once a Google Sheet has
+  /// actually been configured.
+  bool get isSyncDue {
+    if (settings.googleSheetId.trim().isEmpty) return false;
+    final last = settings.lastSyncAt;
+    if (last == null) return true;
+    return DateTime.now().difference(last) >= const Duration(hours: 24);
+  }
+
   List<ProductPreset> get productPresets =>
       List.unmodifiable(_productsBox.values.where((p) => p.isActive));
 

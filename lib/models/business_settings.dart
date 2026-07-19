@@ -46,6 +46,12 @@ class BusinessSettings extends HiveObject {
   @HiveField(13)
   String googleSheetId;
 
+  @HiveField(14)
+  DateTime? lastBackupAt;
+
+  @HiveField(15)
+  DateTime? lastSyncAt;
+
   BusinessSettings({
     this.businessName = 'My Business',
     this.address = '',
@@ -61,5 +67,7 @@ class BusinessSettings extends HiveObject {
     this.facebook = '',
     this.footnote = '',
     this.googleSheetId = '',
+    this.lastBackupAt,
+    this.lastSyncAt,
   });
 }
