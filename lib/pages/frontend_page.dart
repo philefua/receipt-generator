@@ -7,6 +7,7 @@ import '../services/thermal_printer_service.dart';
 import '../services/whatsapp_share_service.dart';
 import '../state/app_state_controller.dart';
 import '../widgets/receipt_preview_widget.dart';
+import 'product_picker_page.dart';
 
 class FrontendPage extends StatefulWidget {
   const FrontendPage({super.key});
@@ -70,13 +71,33 @@ class _FrontendPageState extends State<FrontendPage> {
     super.dispose();
   }
 
-  void _onPresetSelected(ProductPreset? preset) {
+  Future<void> _openProductPicker(
+    BuildContext context,
+    AppStateController controller,
+  ) async {
+    final selected = await Navigator.of(context).push<ProductPreset>(
+      MaterialPageRoute(
+        builder: (_) => ProductPickerPage(
+          products: controller.productPresets,
+          currencySymbol: controller.settings.currencySymbol,
+        ),
+      ),
+    );
+
+    if (selected != null) {
+      setState(() {
+        _selectedPreset = selected;
+        _itemNameController.text = selected.name;
+        _itemPriceController.text = selected.price.toStringAsFixed(2);
+      });
+    }
+  }
+
+  void _clearPresetSelection() {
     setState(() {
-      _selectedPreset = preset;
-      if (preset != null) {
-        _itemNameController.text = preset.name;
-        _itemPriceController.text = preset.price.toStringAsFixed(2);
-      }
+      _selectedPreset = null;
+      _itemNameController.clear();
+      _itemPriceController.clear();
     });
   }
 
@@ -287,7 +308,6 @@ class _FrontendPageState extends State<FrontendPage> {
 
   Widget _buildItemEntry(BuildContext context) {
     final controller = context.watch<AppStateController>();
-    final presets = controller.productPresets;
 
     return Card(
       child: Padding(
@@ -300,28 +320,32 @@ class _FrontendPageState extends State<FrontendPage> {
               style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 12),
-            DropdownButtonFormField<ProductPreset?>(
-              initialValue: _selectedPreset,
-              decoration: const InputDecoration(
-                labelText: 'Select Preset Product',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.inventory_2_outlined),
-              ),
-              items: [
-                const DropdownMenuItem<ProductPreset?>(
-                  value: null,
-                  child: Text('-- Manual Entry --'),
+            InkWell(
+              onTap: () => _openProductPicker(context, controller),
+              child: InputDecorator(
+                decoration: InputDecoration(
+                  labelText: 'Select Preset Product',
+                  border: const OutlineInputBorder(),
+                  prefixIcon: const Icon(Icons.inventory_2_outlined),
+                  suffixIcon: _selectedPreset != null
+                      ? IconButton(
+                          icon: const Icon(Icons.clear),
+                          onPressed: _clearPresetSelection,
+                        )
+                      : const Icon(Icons.chevron_right),
                 ),
-                ...presets.map(
-                  (preset) => DropdownMenuItem<ProductPreset?>(
-                    value: preset,
-                    child: Text(
-                      '${preset.name} (${controller.settings.currencySymbol}${preset.price.toStringAsFixed(2)})',
-                    ),
+                child: Text(
+                  _selectedPreset != null
+                      ? '${_selectedPreset!.name} (${controller.settings.currencySymbol}${_selectedPreset!.price.toStringAsFixed(2)})'
+                      : 'Tap to browse preset products',
+                  style: TextStyle(
+                    color: _selectedPreset != null
+                        ? Theme.of(context).textTheme.bodyLarge?.color
+                        : Colors.grey.shade600,
                   ),
+                  overflow: TextOverflow.ellipsis,
                 ),
-              ],
-              onChanged: _onPresetSelected,
+              ),
             ),
             const SizedBox(height: 12),
             TextField(
