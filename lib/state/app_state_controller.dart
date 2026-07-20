@@ -124,8 +124,13 @@ class AppStateController extends ChangeNotifier {
     return DateTime.now().difference(last) >= const Duration(hours: 24);
   }
 
-  List<ProductPreset> get productPresets =>
-      List.unmodifiable(_productsBox.values.where((p) => p.isActive));
+ List<ProductPreset> get productPresets {
+    final active = _productsBox.values.where((p) => p.isActive).toList();
+    active.sort(
+      (a, b) => a.name.trim().toLowerCase().compareTo(b.name.trim().toLowerCase()),
+    );
+    return List.unmodifiable(active);
+  }
 
   Future<void> addProductPreset({
     required String name,
