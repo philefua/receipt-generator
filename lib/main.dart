@@ -7,14 +7,17 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
 import 'models/business_settings.dart';
+import 'models/license_state.dart';
 import 'models/product_preset.dart';
 import 'models/receipt.dart';
 import 'pages/backend_page.dart';
 import 'pages/frontend_page.dart';
+import 'pages/license_lockout_page.dart';
 import 'pages/printer_setup_page.dart';
 import 'pages/receipt_history_page.dart';
 import 'services/google_drive_service.dart';
 import 'services/google_sheets_service.dart';
+import 'services/license_service.dart';
 import 'state/app_state_controller.dart';
 
 Future<void> main() async {
@@ -25,6 +28,7 @@ Future<void> main() async {
   Hive.registerAdapter(ProductPresetAdapter());
   Hive.registerAdapter(ReceiptItemAdapter());
   Hive.registerAdapter(ReceiptAdapter());
+  Hive.registerAdapter(LicenseStateAdapter());
 
   final controller = AppStateController();
   await controller.init();
@@ -64,6 +68,9 @@ class RootShell extends StatefulWidget {
 class _RootShellState extends State<RootShell> {
   int _selectedIndex = 0;
 
+  bool _isCheckingLicense = true;
+  bool _isLicensed = false;
+
   static const List<Widget> _pages = [
     FrontendPage(),
     BackendPage(),
@@ -78,13 +85,33 @@ class _RootShellState extends State<RootShell> {
   void initState() {
     super.initState();
     _runAutoSyncIfDue();
+    _checkLicenseStatus();
+    _ensureDeviceRegistered();
   }
 
-  /// Silently attempts a Drive backup and/or Sheets product sync on app
-  /// launch, if 24+ hours have passed since the last one. Requires a
-  /// previously-connected Google account (restored via silent sign-in) —
-  /// if no account is connected, this does nothing, since there is no
-  /// prompt-free way to sign in automatically.
+  Future<void> _checkLicenseStatus() async {
+    final isLicensed = await LicenseService.instance.isLicensedActive();
+    if (!mounted) return;
+    setState(() {
+      _isLicensed = isLicensed;
+      _isCheckingLicense = false;
+    });
+  }
+
+  /// Registers/checks this device in with the central device registry,
+  /// if due (first time, or 24+ hours since last check-in). Runs
+  /// silently in the background — any correction to trial dates from
+  /// a first-time reconciliation takes effect on the next license
+  /// check (e.g. next launch), not immediately, so it never interrupts
+  /// whatever the cashier is currently doing.
+  Future<void> _ensureDeviceRegistered() async {
+    final controller = context.read<AppStateController>();
+    await LicenseService.instance.ensureDeviceRegistered(
+      businessName: controller.settings.businessName,
+      whatsappNumber: controller.settings.whatsapp,
+    );
+  }
+
   Future<void> _runAutoSyncIfDue() async {
     final controller = context.read<AppStateController>();
 
@@ -192,6 +219,18 @@ class _RootShellState extends State<RootShell> {
 
   @override
   Widget build(BuildContext context) {
+    if (_isCheckingLicense) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    if (!_isLicensed) {
+      return LicenseLockoutPage(
+        onLicenseActivated: _checkLicenseStatus,
+      );
+    }
+
     return Scaffold(
       appBar: AppBar(
         title: Text(_titles[_selectedIndex]),

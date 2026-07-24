@@ -1,8 +1,8 @@
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:excel/excel.dart' as xls;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
@@ -11,6 +11,7 @@ import 'package:share_plus/share_plus.dart';
 import '../models/product_preset.dart';
 import '../services/google_drive_service.dart';
 import '../services/google_sheets_service.dart';
+import '../services/license_service.dart';
 import '../state/app_state_controller.dart';
 
 class BackendPage extends StatefulWidget {
@@ -247,6 +248,8 @@ class _BackendPageState extends State<BackendPage> {
                           _BusinessInfoForm(),
                           const SizedBox(height: 16),
                           const _ChangePasswordCard(),
+                          const SizedBox(height: 16),
+                          const _LicenseStatusCard(),
                         ],
                       ),
                     ),
@@ -283,6 +286,8 @@ class _BackendPageState extends State<BackendPage> {
                 _BusinessInfoForm(),
                 const SizedBox(height: 16),
                 const _ChangePasswordCard(),
+                const SizedBox(height: 16),
+                const _LicenseStatusCard(),
                 const SizedBox(height: 16),
                 _ProductsSection(width: constraints.maxWidth),
                 const SizedBox(height: 16),
@@ -706,6 +711,115 @@ class _ChangePasswordCardState extends State<_ChangePasswordCard> {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Read-only card showing this device's ID and current trial/subscription/
+/// Lifetime status — for the manager's own reference and for support
+/// (reading the device ID over WhatsApp to request a code, or so you can
+/// tell them their status directly).
+class _LicenseStatusCard extends StatefulWidget {
+  const _LicenseStatusCard();
+
+  @override
+  State<_LicenseStatusCard> createState() => _LicenseStatusCardState();
+}
+
+class _LicenseStatusCardState extends State<_LicenseStatusCard> {
+  LicenseStatusSummary? _summary;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final summary = await LicenseService.instance.getStatusSummary();
+    if (mounted) setState(() => _summary = summary);
+  }
+
+  String _statusLine(LicenseStatusSummary summary) {
+    if (summary.isLifetime) {
+      return 'Lifetime license — no expiry.';
+    }
+
+    final expiry = summary.effectiveExpiry;
+    if (expiry == null) {
+      return 'License status unavailable.';
+    }
+
+    final dateStr = DateFormat('MMM d, yyyy').format(expiry.toLocal());
+    final planWord = summary.planLabel == 'subscription' ? 'Subscription' : 'Trial';
+
+    return '$planWord active — ${summary.daysRemaining} day(s) remaining (until $dateStr).';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final summary = _summary;
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              'License Status',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 12),
+            if (summary == null)
+              const Center(
+                child: Padding(
+                  padding: EdgeInsets.symmetric(vertical: 12),
+                  child: CircularProgressIndicator(),
+                ),
+              )
+            else ...[
+              Text(_statusLine(summary)),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade100,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.grey.shade300),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'Device ID: ${summary.deviceId}',
+                        style: const TextStyle(
+                          fontFamily: 'monospace',
+                          fontSize: 12.5,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Copy device ID',
+                      icon: const Icon(Icons.copy_outlined, size: 18),
+                      onPressed: () {
+                        Clipboard.setData(
+                          ClipboardData(text: summary.deviceId),
+                        );
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Device ID copied.'),
+                          ),
+                        );
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ],
         ),
       ),
     );
