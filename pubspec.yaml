@@ -57,5 +57,14 @@ dev_dependencies:
   hive_generator: ^2.0.1
   build_runner: ^2.4.11
 
+  # --- App Icon Generation (one-time / as-needed tool, not used at runtime) ---
+  flutter_launcher_icons: ^0.14.3
+
 flutter:
   uses-material-design: true
+
+flutter_launcher_icons:
+  android: "launcher_icon"
+  ios: false
+  image_path: "assets/icon/app_icon.png"
+  min_sdk_android: 21
