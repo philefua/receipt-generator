@@ -44,7 +44,7 @@ class GoogleDriveService {
 
   static const List<String> _scopes = [
     'https://www.googleapis.com/auth/drive.file',
-    'https://www.googleapis.com/auth/spreadsheets',
+    'https://www.googleapis.com/auth/spreadsheets.readonly',
   ];
 
   final GoogleSignIn _googleSignIn = GoogleSignIn(scopes: _scopes);
