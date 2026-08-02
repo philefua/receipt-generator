@@ -7,6 +7,7 @@ import 'package:intl/intl.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../models/product_preset.dart';
 import '../services/google_drive_service.dart';
@@ -718,9 +719,7 @@ class _ChangePasswordCardState extends State<_ChangePasswordCard> {
 }
 
 /// Read-only card showing this device's ID and current trial/subscription/
-/// Lifetime status — for the manager's own reference and for support
-/// (reading the device ID over WhatsApp to request a code, or so you can
-/// tell them their status directly).
+/// Lifetime status — for the manager's own reference and for support.
 class _LicenseStatusCard extends StatefulWidget {
   const _LicenseStatusCard();
 
@@ -1193,10 +1192,10 @@ class _ProductsSection extends StatelessWidget {
   }
 }
 
-/// Manages Google account connection, the linked product Sheet, and manual
-/// Backup Now / Sync Products Now actions. Silent sign-in is attempted on
-/// first build so a previously-connected account is restored automatically
-/// without prompting the manager again.
+/// Manages Google account connection, the manager's auto-created product
+/// Sheet, and manual Backup Now / Sync Products Now actions. Silent
+/// sign-in is attempted on first build so a previously-connected account
+/// is restored automatically without prompting the manager again.
 class _GoogleSyncCard extends StatefulWidget {
   final Future<Uint8List> Function() onBuildExcelBytes;
 
@@ -1210,13 +1209,12 @@ class _GoogleSyncCardState extends State<_GoogleSyncCard> {
   bool _isSigningIn = false;
   bool _isBackingUp = false;
   bool _isSyncing = false;
+  bool _isCreatingSheet = false;
   bool _checkedSilentSignIn = false;
-  late final TextEditingController _sheetController;
 
   @override
   void initState() {
     super.initState();
-    _sheetController = TextEditingController();
     _attemptSilentSignIn();
   }
 
@@ -1225,12 +1223,6 @@ class _GoogleSyncCardState extends State<_GoogleSyncCard> {
     if (mounted) {
       setState(() => _checkedSilentSignIn = true);
     }
-  }
-
-  @override
-  void dispose() {
-    _sheetController.dispose();
-    super.dispose();
   }
 
   Future<void> _handleSignIn() async {
@@ -1283,20 +1275,46 @@ class _GoogleSyncCardState extends State<_GoogleSyncCard> {
     }
   }
 
-  Future<void> _handleSaveSheetId(AppStateController controller) async {
-    await controller.updateGoogleSheetId(_sheetController.text.trim());
+ Future<void> _handleCreateProductSheet(AppStateController controller) async {
+    setState(() => _isCreatingSheet = true);
+    try {
+      final result = await GoogleDriveService.instance.createProductSheet();
+      if (!mounted) return;
+
+      if (result.success && result.fileId != null) {
+        await controller.updateGoogleSheetId(result.fileId!);
+      }
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(result.message),
+          backgroundColor:
+              result.success ? Colors.green.shade700 : Colors.red.shade700,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _isCreatingSheet = false);
+    }
+  }
+
+ Future<void> _handleOpenSheet(String fileId) async {
+    final uri = Uri.parse('https://docs.google.com/spreadsheets/d/$fileId/edit');
+    final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Google Sheet link saved.')),
-    );
+    if (!launched) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not open Google Sheets.')),
+      );
+    }
   }
 
   Future<void> _handleSyncNow(AppStateController controller) async {
-    final sheetId = controller.settings.googleSheetId;
-    if (sheetId.isEmpty) {
+    final fileId = controller.settings.googleSheetId;
+    if (fileId.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Paste and save a Google Sheet link first.'),
+          content: Text('Create your product Sheet first.'),
         ),
       );
       return;
@@ -1305,7 +1323,7 @@ class _GoogleSyncCardState extends State<_GoogleSyncCard> {
     setState(() => _isSyncing = true);
     try {
       final result = await GoogleSheetsService.instance.fetchProducts(
-        sheetIdOrUrl: sheetId,
+        fileId: fileId,
       );
       if (!result.success) {
         if (!mounted) return;
@@ -1329,6 +1347,7 @@ class _GoogleSyncCardState extends State<_GoogleSyncCard> {
           backgroundColor: Colors.green.shade700,
         ),
       );
+      await controller.recordSyncCompleted();
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1347,11 +1366,7 @@ class _GoogleSyncCardState extends State<_GoogleSyncCard> {
     final controller = context.watch<AppStateController>();
     final isSignedIn = GoogleDriveService.instance.isSignedIn;
     final signedInEmail = GoogleDriveService.instance.signedInEmail;
-
-    if (_sheetController.text.isEmpty &&
-        controller.settings.googleSheetId.isNotEmpty) {
-      _sheetController.text = controller.settings.googleSheetId;
-    }
+    final hasProductSheet = controller.settings.googleSheetId.trim().isNotEmpty;
 
     return Card(
       child: Padding(
@@ -1365,7 +1380,7 @@ class _GoogleSyncCardState extends State<_GoogleSyncCard> {
             ),
             const SizedBox(height: 4),
             Text(
-              'Automatically back up receipt history and keep preset products in sync with a Google Sheet.',
+              'Automatically back up receipt history and keep preset products in sync with a Google Sheet this app creates for you.',
               style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
             ),
             const SizedBox(height: 16),
@@ -1429,51 +1444,64 @@ class _GoogleSyncCardState extends State<_GoogleSyncCard> {
               const Divider(),
               const SizedBox(height: 8),
               const Text(
-                'Remote Product Sheet',
+                'Product Sheet',
                 style: TextStyle(fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 4),
               Text(
-                'Paste the link to a Google Sheet with Product Name in column A and Unit Price in column B.',
+                hasProductSheet
+                    ? 'Edit prices any time in Google Sheets, then tap Sync Now to pull the changes in.'
+                    : 'Create a product Sheet in your own Google Drive — edit it any time to update your prices.',
                 style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
               ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: _sheetController,
-                decoration: const InputDecoration(
-                  labelText: 'Google Sheet Link or ID',
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.table_chart_outlined),
+              const SizedBox(height: 12),
+              if (!hasProductSheet)
+                ElevatedButton.icon(
+                  onPressed: _isCreatingSheet
+                      ? null
+                      : () => _handleCreateProductSheet(controller),
+                  icon: _isCreatingSheet
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.add_chart_outlined),
+                  label: Text(
+                    _isCreatingSheet ? 'Creating...' : 'Create My Product Sheet',
+                  ),
+                )
+              else
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: () => _handleOpenSheet(
+                          controller.settings.googleSheetId,
+                        ),
+                        icon: const Icon(Icons.open_in_new, size: 18),
+                        label: const Text('Open in Sheets'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        onPressed: _isSyncing
+                            ? null
+                            : () => _handleSyncNow(controller),
+                        icon: _isSyncing
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Icon(Icons.sync_outlined),
+                        label: Text(_isSyncing ? 'Syncing...' : 'Sync Now'),
+                      ),
+                    ),
+                  ],
                 ),
-              ),
-              const SizedBox(height: 10),
-              Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton(
-                      onPressed: () => _handleSaveSheetId(controller),
-                      child: const Text('Save Link'),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: ElevatedButton.icon(
-                      onPressed: _isSyncing
-                          ? null
-                          : () => _handleSyncNow(controller),
-                      icon: _isSyncing
-                          ? const SizedBox(
-                              width: 18,
-                              height: 18,
-                              child:
-                                  CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Icon(Icons.sync_outlined),
-                      label: Text(_isSyncing ? 'Syncing...' : 'Sync Now'),
-                    ),
-                  ),
-                ],
-              ),
             ],
           ],
         ),

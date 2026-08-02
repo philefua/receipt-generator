@@ -1,9 +1,8 @@
-import 'package:googleapis/sheets/v4.dart' as sheets;
-import 'package:http/http.dart' as http;
+import 'package:csv/csv.dart';
 
 import 'google_drive_service.dart';
 
-/// A single product row read from the manager's Google Sheet.
+/// A single product row read from the manager's product Sheet.
 class SheetProductRow {
   final String name;
   final double price;
@@ -11,7 +10,7 @@ class SheetProductRow {
   const SheetProductRow({required this.name, required this.price});
 }
 
-/// Result wrapper for Sheets operations.
+/// Result wrapper for product-sheet read operations.
 class SheetsOperationResult {
   final bool success;
   final String message;
@@ -33,46 +32,27 @@ class SheetsOperationResult {
       SheetsOperationResult(success: false, message: message, products: const []);
 }
 
-/// Reads product data from a Google Sheet the manager maintains remotely,
-/// for syncing into the app's local preset products.
+/// Reads product data from the manager's product Sheet — a native Google
+/// Sheet this app itself created in their Drive (see
+/// GoogleDriveService.createProductSheet). Reading happens via Drive's
+/// CSV export endpoint, not the Sheets API, so this entire feature
+/// operates under the single drive.file scope.
 ///
-/// Expected sheet layout (first row may optionally be a header row, which
-/// is automatically skipped if its price column isn't a valid number):
+/// Expected layout (first row may optionally be a header row, which is
+/// automatically skipped if its price column isn't a valid number):
 ///   Column A: Product Name
-///   Column B: Unit Price
+///   Column B: Price
 class GoogleSheetsService {
   GoogleSheetsService._internal();
 
   static final GoogleSheetsService instance = GoogleSheetsService._internal();
 
-  /// Extracts the Sheet ID from either a raw ID or a full Google Sheets
-  /// URL, so the manager can paste either format into the app.
-  String? extractSheetId(String input) {
-    final trimmed = input.trim();
-    if (trimmed.isEmpty) return null;
-
-    final urlPattern = RegExp(r'/spreadsheets/d/([a-zA-Z0-9-_]+)');
-    final match = urlPattern.firstMatch(trimmed);
-    if (match != null) {
-      return match.group(1);
-    }
-
-    // Assume the input is already a raw Sheet ID if it doesn't match a URL.
-    if (!trimmed.contains('/') && !trimmed.contains(' ')) {
-      return trimmed;
-    }
-
-    return null;
-  }
-
   Future<SheetsOperationResult> fetchProducts({
-    required String sheetIdOrUrl,
-    String range = 'A:B',
+    required String fileId,
   }) async {
-    final sheetId = extractSheetId(sheetIdOrUrl);
-    if (sheetId == null) {
+    if (fileId.trim().isEmpty) {
       return SheetsOperationResult.fail(
-        'Could not read a valid Sheet ID or URL.',
+        'No product Sheet has been created yet.',
       );
     }
 
@@ -83,24 +63,19 @@ class GoogleSheetsService {
     }
 
     try {
-      final client = await _getAuthenticatedClient();
-      if (client == null) {
-        return SheetsOperationResult.fail(
-          'Could not authenticate with Google. Try signing in again.',
-        );
+      final exportResult =
+          await GoogleDriveService.instance.exportProductSheetAsCsv(fileId);
+
+      if (!exportResult.success || exportResult.csvContent == null) {
+        return SheetsOperationResult.fail(exportResult.message);
       }
 
-      final sheetsApi = sheets.SheetsApi(client);
-      final valueRange = await sheetsApi.spreadsheets.values.get(
-        sheetId,
-        range,
-      );
-      client.close();
+      final rows = const CsvToListConverter(eol: '\n')
+          .convert(exportResult.csvContent!, shouldParseNumbers: false);
 
-      final rows = valueRange.values;
-      if (rows == null || rows.isEmpty) {
+      if (rows.isEmpty) {
         return SheetsOperationResult.fail(
-          'The sheet appears to be empty or the range is incorrect.',
+          'The product Sheet appears to be empty.',
         );
       }
 
@@ -115,7 +90,7 @@ class GoogleSheetsService {
 
         final price = double.tryParse(priceRaw);
         if (price == null) {
-          // Skips header rows (e.g. "Product Name" / "Unit Price") or any
+          // Skips the header row ("Product Name" / "Price") or any
           // malformed row automatically, without failing the whole sync.
           continue;
         }
@@ -125,40 +100,16 @@ class GoogleSheetsService {
 
       if (products.isEmpty) {
         return SheetsOperationResult.fail(
-          'No valid product rows found in the sheet.',
+          'No valid product rows found in the Sheet.',
         );
       }
 
       return SheetsOperationResult.ok(
         products,
-        '${products.length} product(s) read from sheet.',
+        '${products.length} product(s) read from Sheet.',
       );
     } catch (e) {
       return SheetsOperationResult.fail('Sheet read failed: $e');
     }
-  }
-
-  Future<http.Client?> _getAuthenticatedClient() async {
-    final account = GoogleDriveService.instance.currentAccountForAuth;
-    if (account == null) return null;
-    try {
-      final authHeaders = await account.authHeaders;
-      return _SheetsAuthClient(authHeaders);
-    } catch (_) {
-      return null;
-    }
-  }
-}
-
-class _SheetsAuthClient extends http.BaseClient {
-  final Map<String, String> _headers;
-  final http.Client _client = http.Client();
-
-  _SheetsAuthClient(this._headers);
-
-  @override
-  Future<http.StreamedResponse> send(http.BaseRequest request) {
-    request.headers.addAll(_headers);
-    return _client.send(request);
   }
 }

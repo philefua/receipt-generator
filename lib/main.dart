@@ -112,6 +112,11 @@ class _RootShellState extends State<RootShell> {
     );
   }
 
+  /// Silently attempts a Drive backup and/or product Sheet sync on app
+  /// launch, if 24+ hours have passed since the last one. Requires a
+  /// previously-connected Google account (restored via silent sign-in) —
+  /// if no account is connected, this does nothing, since there is no
+  /// prompt-free way to sign in automatically.
   Future<void> _runAutoSyncIfDue() async {
     final controller = context.read<AppStateController>();
 
@@ -140,7 +145,7 @@ class _RootShellState extends State<RootShell> {
     if (controller.isSyncDue) {
       try {
         final result = await GoogleSheetsService.instance.fetchProducts(
-          sheetIdOrUrl: controller.settings.googleSheetId,
+          fileId: controller.settings.googleSheetId,
         );
         if (result.success) {
           await controller.replaceProductPresetsFromSync(
