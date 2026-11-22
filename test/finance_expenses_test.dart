@@ -189,7 +189,7 @@ void main() {
     await add(role: Expense.roleCashier, now: morning, amount: 10);
     await add(role: Expense.roleCashier, now: morning, amount: 20); // same instant, own id
     await add(role: Expense.roleManager, now: morning, amount: 30);
-    await add(role: Expense.roleCashier, now: DateTime(2026, 11, 21, 9), amount: 40);
+   await add(role: Expense.roleCashier, now: DateTime(2026, 11, 21, 9), date: DateTime(2026, 11, 21), amount: 40);
 
     expect(repo.box!.length, 4); // no id collision
     final seen = repo.enteredTodayByCashier(now: DateTime(2026, 11, 22, 18));
