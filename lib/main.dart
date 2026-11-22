@@ -51,7 +51,7 @@ class ReceiptGeneratorApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Receipt Generator',
+      title: 'Printiverse',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         useMaterial3: true,
