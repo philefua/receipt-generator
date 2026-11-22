@@ -6,6 +6,7 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
+import 'features/finance/finance_boxes.dart';
 import 'models/business_settings.dart';
 import 'models/expense.dart';
 import 'models/license_state.dart';
@@ -33,9 +34,11 @@ Future<void> main() async {
   Hive.registerAdapter(ReceiptAdapter());
   Hive.registerAdapter(LicenseStateAdapter());
   Hive.registerAdapter(ExpenseAdapter());
+  FinanceBoxes.registerAdapters();
 
   final controller = AppStateController();
   await controller.init();
+  await FinanceBoxes.openAll(); // never throws; finance is optional at launch
 
   runApp(
     ChangeNotifierProvider.value(

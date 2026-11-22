@@ -9,6 +9,7 @@ import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../features/finance/widgets/finance_hub_card.dart';
 import '../models/product_preset.dart';
 import '../services/expense_export_service.dart';
 import '../services/google_drive_service.dart';
@@ -324,6 +325,8 @@ class _BackendPageState extends State<BackendPage> {
                           const SizedBox(height: 16),
                           _buildExpenseExportCard(context),
                           const SizedBox(height: 16),
+                          const FinanceHubCard(),
+                          const SizedBox(height: 16),
                           _GoogleSyncCard(
                             onBuildExcelBytes: () =>
                                 _buildHistoryExcelBytes(
@@ -353,6 +356,8 @@ class _BackendPageState extends State<BackendPage> {
                 _buildExportCard(context),
                 const SizedBox(height: 16),
                 _buildExpenseExportCard(context),
+                const SizedBox(height: 16),
+                const FinanceHubCard(),
                 const SizedBox(height: 16),
                 _GoogleSyncCard(
                   onBuildExcelBytes: () =>
