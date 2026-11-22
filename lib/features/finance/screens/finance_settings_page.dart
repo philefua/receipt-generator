@@ -4,7 +4,6 @@ import 'package:provider/provider.dart';
 
 import '../../../state/app_state_controller.dart';
 import '../finance_repository.dart';
-import '../models/finance_settings.dart';
 import 'expense_categories_page.dart';
 
 /// Manager-only finance settings. Reached from the Manager Backend.
