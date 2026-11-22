@@ -4,6 +4,7 @@ import 'package:hive/hive.dart';
 import 'finance_repository.dart';
 import 'models/asset.dart';
 import 'models/asset_category.dart';
+import 'models/expense.dart';
 import 'models/expense_category.dart';
 import 'models/finance_settings.dart';
 import 'models/loan.dart';
@@ -22,7 +23,7 @@ import 'models/stock_count.dart';
 ///   4 LicenseState, 5 Expense (old, daily-expenses branch only).
 ///   6 FinanceSettings, 7 ExpenseCategory, 8 AssetCategory, 9 ReceiptLink,
 ///   10 StockCount, 11 Asset, 12 Loan, 13 LoanTransaction.
-///   14 is reserved for the reworked Expense (phase 4).
+///   14 Expense (reworked in phase 4; the old typeId 5 Expense is retired).
 class FinanceBoxes {
   FinanceBoxes._();
 
@@ -34,6 +35,8 @@ class FinanceBoxes {
   static const String assetsBox = 'assets_box';
   static const String loansBox = 'loans_box';
   static const String loanTransactionsBox = 'loan_transactions_box';
+  /// New expenses. The old `expenses_box` (typeId 5) is a different box and is never read here.
+  static const String expensesBox = 'finance_expenses_box';
 
   /// Every finance box, for backup and restore. Add new boxes here.
   static const List<String> allBoxNames = [
@@ -45,6 +48,7 @@ class FinanceBoxes {
     assetsBox,
     loansBox,
     loanTransactionsBox,
+    expensesBox,
   ];
 
   /// Names of boxes that failed to open on this launch, with the reason.
@@ -59,6 +63,7 @@ class FinanceBoxes {
     _register<Asset>(11, AssetAdapter());
     _register<Loan>(12, LoanAdapter());
     _register<LoanTransaction>(13, LoanTransactionAdapter());
+    _register<Expense>(14, ExpenseAdapter());
   }
 
   static void _register<T>(int typeId, TypeAdapter<T> adapter) {
@@ -83,6 +88,7 @@ class FinanceBoxes {
     await _open<Asset>(assetsBox);
     await _open<Loan>(loansBox);
     await _open<LoanTransaction>(loanTransactionsBox);
+    await _open<Expense>(expensesBox);
     try {
       await FinanceRepository.instance.initialize();
     } catch (e) {
