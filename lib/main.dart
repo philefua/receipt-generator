@@ -7,18 +7,16 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
 import 'features/finance/finance_boxes.dart';
+import 'features/finance/widgets/log_expense_action.dart';
 import 'models/business_settings.dart';
-import 'models/expense.dart';
 import 'models/license_state.dart';
 import 'models/product_preset.dart';
 import 'models/receipt.dart';
 import 'pages/backend_page.dart';
-import 'pages/daily_expenses_page.dart';
 import 'pages/frontend_page.dart';
 import 'pages/license_lockout_page.dart';
 import 'pages/printer_setup_page.dart';
 import 'pages/receipt_history_page.dart';
-import 'services/expense_export_service.dart';
 import 'services/google_drive_service.dart';
 import 'services/google_sheets_service.dart';
 import 'services/license_service.dart';
@@ -33,7 +31,6 @@ Future<void> main() async {
   Hive.registerAdapter(ReceiptItemAdapter());
   Hive.registerAdapter(ReceiptAdapter());
   Hive.registerAdapter(LicenseStateAdapter());
-  Hive.registerAdapter(ExpenseAdapter());
   FinanceBoxes.registerAdapters();
 
   final controller = AppStateController();
@@ -141,7 +138,6 @@ class _RootShellState extends State<RootShell> {
         );
         if (result.success) {
           await controller.recordBackupCompleted();
-          await _backupExpensesQuietly(controller);
         }
       } catch (_) {
         // Silent failure is intentional here — this is a background,
@@ -164,24 +160,6 @@ class _RootShellState extends State<RootShell> {
       } catch (_) {
         // Same reasoning — silent, non-blocking background attempt.
       }
-    }
-  }
-
-  /// Uploads the expense report (same layout as the financial workbook's
-  /// expense ledger) right after a successful sales backup. Every export
-  /// holds the full expense log, so a failed attempt is covered by the
-  /// next one. Skipped when there are no expenses; never shows an error.
-  Future<void> _backupExpensesQuietly(AppStateController controller) async {
-    try {
-      final expenses = controller.exportableExpenses;
-      if (expenses.isEmpty) return;
-      final bytes = await ExpenseExportService.buildExcelBytes(expenses);
-      await GoogleDriveService.instance.uploadExcelBackup(
-        bytes: bytes,
-        fileName: ExpenseExportService.fileName(),
-      );
-    } catch (_) {
-      // Silent on purpose, same as the sales backup above.
     }
   }
 
@@ -277,17 +255,7 @@ class _RootShellState extends State<RootShell> {
               );
             },
           ),
-          IconButton(
-            tooltip: 'Daily Expenses',
-            icon: const Icon(Icons.payments_outlined),
-            onPressed: () {
-              Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => const DailyExpensesPage(),
-                ),
-              );
-            },
-          ),
+          const LogExpenseAction(),
           IconButton(
             tooltip: 'Receipt History',
             icon: const Icon(Icons.history_outlined),

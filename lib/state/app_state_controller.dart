@@ -6,8 +6,6 @@ import 'package:uuid/uuid.dart';
 
 import '../models/business_settings.dart';
 import '../models/cart_item.dart';
-import '../models/expense.dart';
-import '../models/expense_options.dart';
 import '../models/product_preset.dart';
 import '../models/receipt.dart';
 import '../utils/discount_code_util.dart';
@@ -16,13 +14,11 @@ class AppStateController extends ChangeNotifier {
   static const String _settingsBoxName = 'settings_box';
   static const String _productsBoxName = 'products_box';
   static const String _receiptsBoxName = 'receipts_box';
-  static const String _expensesBoxName = 'expenses_box';
   static const String _settingsKey = 'business_settings';
 
   late final Box<BusinessSettings> _settingsBox;
   late final Box<ProductPreset> _productsBox;
   late final Box<Receipt> _receiptsBox;
-  late final Box<Expense> _expensesBox;
 
   final List<CartItem> _cart = [];
   double _discountPercent = 0;
@@ -36,7 +32,6 @@ class AppStateController extends ChangeNotifier {
     _settingsBox = await Hive.openBox<BusinessSettings>(_settingsBoxName);
     _productsBox = await Hive.openBox<ProductPreset>(_productsBoxName);
     _receiptsBox = await Hive.openBox<Receipt>(_receiptsBoxName);
-    _expensesBox = await Hive.openBox<Expense>(_expensesBoxName);
 
     if (!_settingsBox.containsKey(_settingsKey)) {
       await _settingsBox.put(
@@ -379,212 +374,6 @@ class AppStateController extends ChangeNotifier {
     final list = _receiptsBox.values.toList();
     list.sort((a, b) => b.issuedAt.compareTo(a.issuedAt));
     return List.unmodifiable(list);
-  }
-
-  // ---------------------------------------------------------------------
-  // Daily expense record
-  //
-  // Each Expense maps onto one row of tab 3_Expense_Ledger in the
-  // Printiverse financial workbook. Expenses are never deleted: a mistaken
-  // entry is voided (manager password required), which removes it from
-  // totals and from the export while keeping the record.
-  // ---------------------------------------------------------------------
-
-  static DateTime _dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
-
-  static bool _sameDay(DateTime a, DateTime b) =>
-      a.year == b.year && a.month == b.month && a.day == b.day;
-
-  static double _round2(double v) => double.parse(v.toStringAsFixed(2));
-
-  static int _newestFirst(Expense a, Expense b) {
-    final byDate = b.date.compareTo(a.date);
-    return byDate != 0 ? byDate : b.voucher.compareTo(a.voucher);
-  }
-
-  static int _oldestFirst(Expense a, Expense b) {
-    final byDate = a.date.compareTo(b.date);
-    return byDate != 0 ? byDate : a.voucher.compareTo(b.voucher);
-  }
-
-  /// Every expense ever recorded, including voided ones, newest first.
-  List<Expense> get allExpenses {
-    final list = _expensesBox.values.toList();
-    list.sort(_newestFirst);
-    return List.unmodifiable(list);
-  }
-
-  /// Expenses dated [day], including voided ones (shown struck through),
-  /// newest first.
-  List<Expense> expensesForDay(DateTime day) {
-    final list =
-        _expensesBox.values.where((e) => _sameDay(e.date, day)).toList();
-    list.sort(_newestFirst);
-    return List.unmodifiable(list);
-  }
-
-  /// Non-voided expenses, oldest first. This is exactly what the expense
-  /// export writes into the workbook's expense ledger.
-  List<Expense> get exportableExpenses {
-    final list = _expensesBox.values.where((e) => !e.isVoided).toList();
-    list.sort(_oldestFirst);
-    return List.unmodifiable(list);
-  }
-
-  /// Cash paid out on [day] (Net + Input VAT - WHT), voided entries excluded.
-  double totalCashPaidForDay(DateTime day) {
-    final total = _expensesBox.values
-        .where((e) => !e.isVoided && _sameDay(e.date, day))
-        .fold<double>(0, (sum, e) => sum + e.totalCashPaid);
-    return _round2(total);
-  }
-
-  /// Money actually collected from receipts issued on [day] (deposits paid,
-  /// so part-payments are not overstated).
-  double salesCollectedForDay(DateTime day) {
-    final total = _receiptsBox.values
-        .where((r) => _sameDay(r.issuedAt, day))
-        .fold<double>(0, (sum, r) => sum + r.depositPaid);
-    return _round2(total);
-  }
-
-  static final RegExp _voucherPattern = RegExp(r'^EXP-(\d+)$');
-
-  /// The next voucher number, EXP-0001 onwards. Voided entries keep their
-  /// number, so numbers are never reused.
-  String nextVoucher() {
-    var highest = 0;
-    for (final e in _expensesBox.values) {
-      final match = _voucherPattern.firstMatch(e.voucher);
-      if (match == null) continue;
-      final n = int.tryParse(match.group(1)!) ?? 0;
-      if (n > highest) highest = n;
-    }
-    return 'EXP-${(highest + 1).toString().padLeft(4, '0')}';
-  }
-
-  /// Returns a plain-English problem with the entry, or null if it is valid.
-  /// Used by the expense page to show errors, and again by [addExpense] as
-  /// a safety net, so the rules live in one place.
-  String? validateExpense({
-    required DateTime date,
-    required String vendor,
-    required String description,
-    required String costType,
-    required String category,
-    required double? netAmount,
-    required double inputVat,
-    required double whtDeducted,
-    required String paymentAccount,
-    required String receiptStatus,
-    required String notes,
-  }) {
-    if (_dateOnly(date).isAfter(_dateOnly(DateTime.now()))) {
-      return 'The date cannot be in the future.';
-    }
-    if (vendor.trim().isEmpty) return 'Enter the vendor or payee.';
-    if (description.trim().isEmpty) {
-      return 'Describe what was paid for, with quantity.';
-    }
-    if (!ExpenseOptions.costTypes.contains(costType)) {
-      return 'Choose a cost type.';
-    }
-    if (!ExpenseOptions.isValidPair(costType, category)) {
-      return 'Choose a category that belongs to $costType.';
-    }
-    if (netAmount == null || netAmount <= 0) {
-      return 'Enter an amount greater than zero.';
-    }
-    if (inputVat < 0 || whtDeducted < 0) {
-      return 'VAT and WHT cannot be negative.';
-    }
-    if (!ExpenseOptions.allowsVatAndWht(costType) &&
-        (inputVat != 0 || whtDeducted != 0)) {
-      return '$costType entries cannot carry Input VAT or WHT.';
-    }
-    if (whtDeducted > netAmount + inputVat) {
-      return 'WHT cannot be more than the net amount plus VAT.';
-    }
-    if (!ExpenseOptions.paymentAccounts.contains(paymentAccount)) {
-      return 'Choose a payment account.';
-    }
-    if (!ExpenseOptions.receiptStatuses.contains(receiptStatus)) {
-      return 'Choose a receipt status.';
-    }
-    if (ExpenseOptions.requiresAssetTag(costType) && notes.trim().isEmpty) {
-      return 'CapEx needs a serial number or asset tag in Notes.';
-    }
-    return null;
-  }
-
-  /// Saves a new expense and assigns its voucher number. Throws an
-  /// [ArgumentError] carrying the [validateExpense] message if the entry
-  /// breaks a rule.
-  Future<Expense> addExpense({
-    required DateTime date,
-    required String vendor,
-    required String description,
-    required String costType,
-    required String category,
-    required double netAmount,
-    double inputVat = 0,
-    double whtDeducted = 0,
-    required String paymentAccount,
-    required String receiptStatus,
-    String recordedBy = '',
-    String notes = '',
-  }) async {
-    final problem = validateExpense(
-      date: date,
-      vendor: vendor,
-      description: description,
-      costType: costType,
-      category: category,
-      netAmount: netAmount,
-      inputVat: inputVat,
-      whtDeducted: whtDeducted,
-      paymentAccount: paymentAccount,
-      receiptStatus: receiptStatus,
-      notes: notes,
-    );
-    if (problem != null) throw ArgumentError(problem);
-
-    final expense = Expense(
-      id: const Uuid().v4(),
-      date: _dateOnly(date),
-      voucher: nextVoucher(),
-      vendor: vendor.trim(),
-      description: description.trim(),
-      costType: costType,
-      category: category,
-      netAmount: _round2(netAmount),
-      inputVat: _round2(inputVat),
-      whtDeducted: _round2(whtDeducted),
-      paymentAccount: paymentAccount,
-      receiptStatus: receiptStatus,
-      recordedBy: recordedBy.trim(),
-      notes: notes.trim(),
-      recordedAt: DateTime.now(),
-    );
-    await _expensesBox.put(expense.id, expense);
-    notifyListeners();
-    return expense;
-  }
-
-  /// Voids an expense (soft delete). Needs the manager password; returns
-  /// false, changing nothing, if the password is wrong or the entry is gone.
-  Future<bool> voidExpense(
-    String id, {
-    required String managerPassword,
-  }) async {
-    if (!verifyManagerPassword(managerPassword)) return false;
-    final expense = _expensesBox.get(id);
-    if (expense == null) return false;
-    if (expense.isVoided) return true;
-    expense.isVoided = true;
-    await expense.save();
-    notifyListeners();
-    return true;
   }
 
   Receipt? findReceiptByCode(String code) {

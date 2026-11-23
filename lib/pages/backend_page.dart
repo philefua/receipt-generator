@@ -11,7 +11,6 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../features/finance/widgets/finance_hub_card.dart';
 import '../models/product_preset.dart';
-import '../services/expense_export_service.dart';
 import '../services/google_drive_service.dart';
 import '../services/google_sheets_service.dart';
 import '../services/license_service.dart';
@@ -29,7 +28,6 @@ class _BackendPageState extends State<BackendPage> {
   final TextEditingController _passwordController = TextEditingController();
   String? _authError;
   bool _isExporting = false;
-  bool _isExportingExpenses = false;
 
   @override
   void dispose() {
@@ -217,60 +215,6 @@ class _BackendPageState extends State<BackendPage> {
     }
   }
 
-  Future<void> _exportExpensesToExcel(BuildContext context) async {
-    final controller = context.read<AppStateController>();
-    final expenses = controller.exportableExpenses;
-    if (expenses.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No expenses to export yet.')),
-      );
-      return;
-    }
-    setState(() => _isExportingExpenses = true);
-
-    try {
-      final bytes = await ExpenseExportService.buildExcelBytes(expenses);
-      final fileName = ExpenseExportService.fileName();
-
-      final directory = await getApplicationDocumentsDirectory();
-      final filePath = '${directory.path}/$fileName';
-      final file = File(filePath);
-      await file.writeAsBytes(bytes, flush: true);
-
-      if (!context.mounted) return;
-
-      await SharePlus.instance.share(
-        ShareParams(
-          files: [XFile(filePath, name: fileName)],
-          text: 'Expense report export ($fileName)',
-        ),
-      );
-
-      if (!context.mounted) return;
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Exported ${expenses.length} expenses. Choose "Save to Downloads" or your preferred app.',
-          ),
-          backgroundColor: Colors.green.shade700,
-        ),
-      );
-    } catch (e) {
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Export failed: $e'),
-          backgroundColor: Theme.of(context).colorScheme.error,
-        ),
-      );
-    } finally {
-      if (mounted) {
-        setState(() => _isExportingExpenses = false);
-      }
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     if (!_unlocked) {
@@ -323,8 +267,6 @@ class _BackendPageState extends State<BackendPage> {
                           const SizedBox(height: 16),
                           _buildExportCard(context),
                           const SizedBox(height: 16),
-                          _buildExpenseExportCard(context),
-                          const SizedBox(height: 16),
                           const FinanceHubCard(),
                           const SizedBox(height: 16),
                           _GoogleSyncCard(
@@ -355,8 +297,6 @@ class _BackendPageState extends State<BackendPage> {
                 const SizedBox(height: 16),
                 _buildExportCard(context),
                 const SizedBox(height: 16),
-                _buildExpenseExportCard(context),
-                const SizedBox(height: 16),
                 const FinanceHubCard(),
                 const SizedBox(height: 16),
                 _GoogleSyncCard(
@@ -367,47 +307,6 @@ class _BackendPageState extends State<BackendPage> {
             ),
           );
         },
-      ),
-    );
-  }
-
-  Widget _buildExpenseExportCard(BuildContext context) {
-    final controller = context.watch<AppStateController>();
-    final count = controller.exportableExpenses.length;
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const Text(
-              'Expense Export',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              '$count expense${count == 1 ? '' : 's'} recorded by the '
-              'cashier (voided entries are left out). The file follows the '
-              'layout of the financial workbook\'s expense ledger.',
-            ),
-            const SizedBox(height: 12),
-            ElevatedButton.icon(
-              onPressed: _isExportingExpenses
-                  ? null
-                  : () => _exportExpensesToExcel(context),
-              icon: _isExportingExpenses
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.file_download_outlined),
-              label: Text(
-                _isExportingExpenses ? 'Exporting...' : 'Export Expenses to Excel',
-              ),
-            ),
-          ],
-        ),
       ),
     );
   }
@@ -1351,7 +1250,6 @@ class _GoogleSyncCardState extends State<_GoogleSyncCard> {
   }
 
   Future<void> _handleBackupNow() async {
-    final controller = context.read<AppStateController>();
     setState(() => _isBackingUp = true);
     try {
       final bytes = await widget.onBuildExcelBytes();
@@ -1362,29 +1260,8 @@ class _GoogleSyncCardState extends State<_GoogleSyncCard> {
         fileName: fileName,
       );
 
-      var message = result.message;
-      var success = result.success;
-
-      // The expense report goes up right after the sales backup.
-      if (result.success) {
-        final expenses = controller.exportableExpenses;
-        if (expenses.isNotEmpty) {
-          final expenseBytes =
-              await ExpenseExportService.buildExcelBytes(expenses);
-          final expenseResult =
-              await GoogleDriveService.instance.uploadExcelBackup(
-            bytes: expenseBytes,
-            fileName: ExpenseExportService.fileName(),
-          );
-          if (expenseResult.success) {
-            message = '$message Expense report uploaded too.';
-          } else {
-            success = false;
-            message =
-                'Sales backup uploaded, but the expense report failed: ${expenseResult.message}';
-          }
-        }
-      }
+      final message = result.message;
+      final success = result.success;
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
