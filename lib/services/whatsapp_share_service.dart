@@ -1,6 +1,7 @@
 import 'package:url_launcher/url_launcher.dart';
 
 import '../models/business_settings.dart';
+import '../features/finance/balance_receipt_view.dart';
 import '../models/receipt.dart';
 
 /// Result wrapper for share operations so calling UI code can display a
@@ -65,6 +66,16 @@ class WhatsappShareService {
   /// deliberately excluded — only the business name, transaction details,
   /// and footnote are included.
   String _buildReceiptMessage(Receipt receipt, BusinessSettings business) {
+    // Balance payments have their own message (phase 5). Sales are unchanged.
+    if (receipt.isBalancePayment) {
+      return BalanceReceiptView.fromReceipt(
+        receipt,
+        businessName: business.businessName,
+        currency: business.currencySymbol,
+        footnote: business.footnote,
+      ).whatsappMessage();
+    }
+
     final buffer = StringBuffer();
     final currencySymbol = business.currencySymbol;
 

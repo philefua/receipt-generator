@@ -75,6 +75,20 @@ class Receipt extends HiveObject {
   @HiveField(14)
   final double balanceOwed;
 
+  /// 'sale' for every normal sale, or 'balance_payment'. Records saved before
+  /// balance payments existed have no value stored and read back as a sale.
+  @HiveField(15, defaultValue: 'sale')
+  final String receiptType;
+
+  /// For a balance payment: the receipt number of the original sale.
+  @HiveField(16)
+  final String? linkedReceiptId;
+
+  static const String typeSale = 'sale';
+  static const String typeBalancePayment = 'balance_payment';
+
+  bool get isBalancePayment => receiptType == typeBalancePayment;
+
   Receipt({
     required this.receiptCode,
     required this.issuedAt,
@@ -91,5 +105,7 @@ class Receipt extends HiveObject {
     this.couponReference = '',
     this.depositPaid = 0,
     this.balanceOwed = 0,
+    this.receiptType = 'sale',
+    this.linkedReceiptId,
   });
 }

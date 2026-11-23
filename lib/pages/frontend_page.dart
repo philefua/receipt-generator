@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../features/finance/widgets/balance_payment_button.dart';
 import '../models/product_preset.dart';
 import '../models/receipt.dart';
 import '../services/thermal_printer_service.dart';
@@ -668,6 +669,8 @@ class _FrontendPageState extends State<FrontendPage> {
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   _buildHeader(context),
+                  const SizedBox(height: 12),
+                  const BalancePaymentButton(),
                   const SizedBox(height: 12),
                   _buildCustomerForm(),
                   const SizedBox(height: 12),

@@ -6,6 +6,7 @@ import 'package:flutter_classic_bluetooth/flutter_classic_bluetooth.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../models/business_settings.dart';
+import '../features/finance/balance_receipt_printing.dart';
 import '../models/receipt.dart';
 
 /// Standard Serial Port Profile (SPP) UUID used by virtually all classic
@@ -150,6 +151,11 @@ Future<bool> requestPermissions() async {
     required Receipt receipt,
     required BusinessSettings business,
   }) async {
+    // Balance payments have their own template (phase 5). Sales are unchanged.
+    if (receipt.isBalancePayment) {
+      return buildBalanceReceiptBytes(receipt: receipt, business: business);
+    }
+
     final profile = await CapabilityProfile.load();
     final generator = Generator(PaperSize.mm58, profile);
     final List<int> bytes = <int>[];

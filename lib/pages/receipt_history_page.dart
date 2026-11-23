@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
+import '../features/finance/balance_receipt_view.dart';
+import '../features/finance/balance_repository.dart';
+import '../features/finance/widgets/balance_receipt_preview.dart';
 import '../models/receipt.dart';
 import '../services/thermal_printer_service.dart';
 import '../state/app_state_controller.dart';
@@ -18,6 +21,7 @@ class ReceiptHistoryPage extends StatelessWidget {
     final receipts = controller.receiptHistory;
     final currency = controller.settings.currencySymbol;
     final dateFormat = DateFormat('yyyy-MM-dd  HH:mm');
+    final outstandingByCode = BalanceRepository.outstandingByCode(receipts);
 
     return Scaffold(
       appBar: AppBar(
@@ -39,8 +43,12 @@ class ReceiptHistoryPage extends StatelessWidget {
                       style: const TextStyle(fontWeight: FontWeight.bold),
                     ),
                     subtitle: Text(
-                      '${receipt.customerName.isNotEmpty ? receipt.customerName : 'Walk-in customer'}\n'
-                      '${dateFormat.format(receipt.issuedAt)} • ${receipt.paymentMethod}',
+                      historySubtitle(
+                        receipt: receipt,
+                        dateText: dateFormat.format(receipt.issuedAt),
+                        currency: currency,
+                        outstandingByCode: outstandingByCode,
+                      ),
                     ),
                     isThreeLine: true,
                     trailing: Text(
@@ -106,10 +114,15 @@ class _ReceiptDetailPageState extends State<ReceiptDetailPage> {
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Center(
-          child: ReceiptPreviewWidget(
-            receipt: widget.receipt,
-            business: controller.settings,
-          ),
+          child: widget.receipt.isBalancePayment
+              ? BalanceReceiptPreview(
+                  receipt: widget.receipt,
+                  business: controller.settings,
+                )
+              : ReceiptPreviewWidget(
+                  receipt: widget.receipt,
+                  business: controller.settings,
+                ),
         ),
       ),
       floatingActionButton: FloatingActionButton.extended(

@@ -376,6 +376,10 @@ class AppStateController extends ChangeNotifier {
     return List.unmodifiable(list);
   }
 
+  /// Lets the finance feature tell the screens that the receipts box changed
+  /// (it saves balance receipts itself).
+  void notifyReceiptsChanged() => notifyListeners();
+
   Receipt? findReceiptByCode(String code) {
     try {
       return _receiptsBox.values.firstWhere((r) => r.receiptCode == code);

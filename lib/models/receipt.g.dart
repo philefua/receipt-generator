@@ -78,13 +78,15 @@ class ReceiptAdapter extends TypeAdapter<Receipt> {
       couponReference: fields[12] as String,
       depositPaid: fields[13] as double,
       balanceOwed: fields[14] as double,
+      receiptType: fields[15] == null ? 'sale' : fields[15] as String,
+      linkedReceiptId: fields[16] as String?,
     );
   }
 
   @override
   void write(BinaryWriter writer, Receipt obj) {
     writer
-      ..writeByte(15)
+      ..writeByte(17)
       ..writeByte(0)
       ..write(obj.receiptCode)
       ..writeByte(1)
@@ -114,7 +116,11 @@ class ReceiptAdapter extends TypeAdapter<Receipt> {
       ..writeByte(13)
       ..write(obj.depositPaid)
       ..writeByte(14)
-      ..write(obj.balanceOwed);
+      ..write(obj.balanceOwed)
+      ..writeByte(15)
+      ..write(obj.receiptType)
+      ..writeByte(16)
+      ..write(obj.linkedReceiptId);
   }
 
   @override
