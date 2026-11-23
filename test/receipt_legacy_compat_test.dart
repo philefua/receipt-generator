@@ -79,18 +79,23 @@ void main() {
   setUp(() {
     dir = Directory.systemTemp.createTempSync('receipt_legacy_');
     Hive.init(dir.path);
+    if (!Hive.isAdapterRegistered(2)) Hive.registerAdapter(ReceiptItemAdapter());
   });
 
   tearDown(() async {
     await Hive.close();
-    Hive.resetAdapters();
-    if (dir.existsSync()) dir.deleteSync(recursive: true);
+    // Do NOT call Hive.resetAdapters(): it also removes Hive's own built-in
+    // adapters (DateTime and others), which breaks every later read and write.
+    try {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    } catch (_) {
+      // Windows can keep a file handle for a moment; a leftover temp folder is harmless.
+    }
   });
 
   test('receipts saved before phase 5 still open and read back as sales', () async {
-    // 1. Store a receipt using the OLD layout.
-    Hive.registerAdapter(ReceiptItemAdapter());
-    Hive.registerAdapter(_LegacyReceiptAdapter());
+    // 1. Store a receipt using the OLD layout (typeId 3 = the old adapter).
+    Hive.registerAdapter(_LegacyReceiptAdapter(), override: true);
     final legacyBox = await Hive.openBox('legacy_receipts');
     await legacyBox.add(_LegacyReceipt(
       receiptCode: 'ZKq05',
@@ -111,10 +116,8 @@ void main() {
     ));
     await legacyBox.close();
 
-    // 2. Open the same file with the NEW adapter.
-    Hive.resetAdapters();
-    Hive.registerAdapter(ReceiptItemAdapter());
-    Hive.registerAdapter(ReceiptAdapter());
+    // 2. Swap in the NEW adapter for the same typeId and open the same file.
+    Hive.registerAdapter(ReceiptAdapter(), override: true);
     final box = await Hive.openBox<Receipt>('legacy_receipts');
 
     final r = box.values.single;
@@ -131,8 +134,7 @@ void main() {
   });
 
   test('new receipts keep their type and link after close and reopen', () async {
-    Hive.registerAdapter(ReceiptItemAdapter());
-    Hive.registerAdapter(ReceiptAdapter());
+    Hive.registerAdapter(ReceiptAdapter(), override: true);
     var box = await Hive.openBox<Receipt>('new_receipts');
     await box.add(Receipt(
       receiptCode: 'ZKv01-B',
