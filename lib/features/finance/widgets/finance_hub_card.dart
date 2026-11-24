@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 
+import '../asset_repository.dart';
 import '../finance_boxes.dart';
 import '../expense_repository.dart';
 import '../finance_repository.dart';
 import '../legacy_link_repository.dart';
+import '../screens/assets_page.dart';
 import '../screens/expenses_page.dart';
 import '../screens/finance_settings_page.dart';
 import '../screens/settle_balances_page.dart';
@@ -82,6 +84,22 @@ class FinanceHubCard extends StatelessWidget {
                 },
                 icon: const Icon(Icons.balance_outlined),
                 label: const Text('Settle with adjustment'),
+              ),
+              const SizedBox(height: 8),
+            ],
+            if (ready && AssetRepository.instance.isReady) ...[
+              OutlinedButton.icon(
+                onPressed: () {
+                  try {
+                    Navigator.of(context).push(MaterialPageRoute(
+                        builder: (_) => const ManagerAssetsPage()));
+                  } catch (_) {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                        content: Text('Could not open Assets.')));
+                  }
+                },
+                icon: const Icon(Icons.inventory_2_outlined),
+                label: const Text('Assets'),
               ),
               const SizedBox(height: 8),
             ],
