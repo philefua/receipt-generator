@@ -5,9 +5,11 @@ import '../finance_boxes.dart';
 import '../expense_repository.dart';
 import '../finance_repository.dart';
 import '../legacy_link_repository.dart';
+import '../loan_repository.dart';
 import '../screens/assets_page.dart';
 import '../screens/expenses_page.dart';
 import '../screens/finance_settings_page.dart';
+import '../screens/loans_page.dart';
 import '../screens/settle_balances_page.dart';
 import '../settlement_repository.dart';
 import '../screens/unmatched_balance_payments_page.dart';
@@ -100,6 +102,22 @@ class FinanceHubCard extends StatelessWidget {
                 },
                 icon: const Icon(Icons.inventory_2_outlined),
                 label: const Text('Assets'),
+              ),
+              const SizedBox(height: 8),
+            ],
+            if (ready && LoanRepository.instance.isReady) ...[
+              OutlinedButton.icon(
+                onPressed: () {
+                  try {
+                    Navigator.of(context).push(MaterialPageRoute(
+                        builder: (_) => const ManagerLoansPage()));
+                  } catch (_) {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                        content: Text('Could not open Loans.')));
+                  }
+                },
+                icon: const Icon(Icons.account_balance_outlined),
+                label: const Text('Loans'),
               ),
               const SizedBox(height: 8),
             ],
