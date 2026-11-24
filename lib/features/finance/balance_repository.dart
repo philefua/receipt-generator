@@ -4,6 +4,7 @@ import '../../models/receipt.dart';
 import '../../utils/discount_code_util.dart';
 import 'balance_math.dart';
 import 'finance_repository.dart';
+import 'legacy_link_repository.dart';
 
 /// A sale that still has money owed on it.
 class OpenBalance {
@@ -118,8 +119,22 @@ class BalanceRepository {
 
   /// Outstanding balance per sale code for the given receipts (the history
   /// page passes the list it already has, so this is one pass).
-  static Map<String, int> outstandingByCode(Iterable<Receipt> all) =>
-      BalanceMath.outstandingBySale(_sales(all), _payments(all));
+  ///
+  /// Old hand-typed balance receipts that the manager (or the matcher) has
+  /// linked count as payments on their original sale, and a linked balance
+  /// receipt does not count as a second debt of its own.
+  static Map<String, int> outstandingByCode(Iterable<Receipt> all) {
+    final list = all.toList();
+    final legacy = LegacyLinkRepository.instance.adjustmentsFor(list);
+    final map = BalanceMath.outstandingBySale(
+      _sales(list),
+      [..._payments(list), ...legacy.payments],
+    );
+    for (final code in legacy.clearedOwn) {
+      if (map.containsKey(code)) map[code] = 0;
+    }
+    return map;
+  }
 
   /// Looks up the original sale by its exact receipt number. Letters are
   /// case-sensitive on purpose: the code format uses capital and small
@@ -134,6 +149,8 @@ class BalanceRepository {
       return BalanceLookup.failure('Enter the original receipt number.');
     }
 
+    final legacy = LegacyLinkRepository.instance.adjustmentsFor(box.values);
+
     Receipt? original;
     var paidLater = 0;
     for (final r in box.values) {
@@ -142,12 +159,16 @@ class BalanceRepository {
         paidLater += BalanceMath.toMinor(r.totalPayable);
       }
     }
+    // Old typed balance receipts linked to this sale.
+    for (final p in legacy.payments) {
+      if (p.linkedCode == code) paidLater += p.amountMinor;
+    }
     if (original == null) {
       return BalanceLookup.failure(
           'No receipt found with the number $code. Check the letters '
           '(capital and small letters matter) or pick it from the list.');
     }
-    if (original.isBalancePayment) {
+    if (original.isBalancePayment || legacy.linkedCodes.contains(code)) {
       return BalanceLookup.failure(
           '$code is a balance receipt. Enter the number of the original sale receipt.');
     }

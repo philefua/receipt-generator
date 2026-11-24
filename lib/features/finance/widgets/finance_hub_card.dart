@@ -3,8 +3,10 @@ import 'package:flutter/material.dart';
 import '../finance_boxes.dart';
 import '../expense_repository.dart';
 import '../finance_repository.dart';
+import '../legacy_link_repository.dart';
 import '../screens/expenses_page.dart';
 import '../screens/finance_settings_page.dart';
+import '../screens/unmatched_balance_payments_page.dart';
 
 /// The single entry card shown inside the Manager Backend (behind the manager
 /// password). Later phases add Reports, Assets and Loans here.
@@ -14,6 +16,9 @@ class FinanceHubCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final ready = FinanceRepository.instance.isReady;
+    final legacyReady = ready && LegacyLinkRepository.instance.isReady;
+    final unmatched =
+        legacyReady ? LegacyLinkRepository.instance.needsReviewCount() : 0;
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -40,6 +45,25 @@ class FinanceHubCard extends StatelessWidget {
                 },
                 icon: const Icon(Icons.receipt_long_outlined),
                 label: const Text('Expenses'),
+              ),
+              const SizedBox(height: 8),
+            ],
+            if (legacyReady) ...[
+              OutlinedButton.icon(
+                onPressed: () {
+                  try {
+                    Navigator.of(context).push(MaterialPageRoute(
+                        builder: (_) => const UnmatchedBalancePaymentsPage()));
+                  } catch (_) {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                        content: Text(
+                            'Could not open Unmatched balance payments.')));
+                  }
+                },
+                icon: const Icon(Icons.link_off_outlined),
+                label: Text(unmatched > 0
+                    ? 'Unmatched balance payments ($unmatched)'
+                    : 'Unmatched balance payments'),
               ),
               const SizedBox(height: 8),
             ],
