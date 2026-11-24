@@ -5,6 +5,7 @@ import '../../utils/discount_code_util.dart';
 import 'balance_math.dart';
 import 'finance_repository.dart';
 import 'legacy_link_repository.dart';
+import 'writeoff_totals.dart';
 
 /// A sale that still has money owed on it.
 class OpenBalance {
@@ -20,6 +21,9 @@ class BalanceLookup {
   final int totalMinor;
   final int depositMinor;
   final int paidLaterMinor;
+
+  /// Written off by the manager ("Settle with adjustment"). Not cash.
+  final int writtenOffMinor;
   final int outstandingMinor;
   final String? error;
 
@@ -28,6 +32,7 @@ class BalanceLookup {
     this.totalMinor = 0,
     this.depositMinor = 0,
     this.paidLaterMinor = 0,
+    this.writtenOffMinor = 0,
     this.outstandingMinor = 0,
     this.error,
   });
@@ -40,6 +45,7 @@ class BalanceLookup {
     required int totalMinor,
     required int depositMinor,
     required int paidLaterMinor,
+    int writtenOffMinor = 0,
     required int outstandingMinor,
   }) =>
       BalanceLookup._(
@@ -47,6 +53,7 @@ class BalanceLookup {
         totalMinor: totalMinor,
         depositMinor: depositMinor,
         paidLaterMinor: paidLaterMinor,
+        writtenOffMinor: writtenOffMinor,
         outstandingMinor: outstandingMinor,
       );
 
@@ -126,9 +133,17 @@ class BalanceRepository {
   static Map<String, int> outstandingByCode(Iterable<Receipt> all) {
     final list = all.toList();
     final legacy = LegacyLinkRepository.instance.adjustmentsFor(list);
+    final writtenOff = WriteoffTotals.read();
     final map = BalanceMath.outstandingBySale(
       _sales(list),
-      [..._payments(list), ...legacy.payments],
+      [
+        ..._payments(list),
+        ...legacy.payments,
+        // A write-off lowers what is owed exactly like a payment does, but no
+        // cash moved.
+        for (final e in writtenOff.entries)
+          PaymentSummary(linkedCode: e.key, amountMinor: e.value),
+      ],
     );
     for (final code in legacy.clearedOwn) {
       if (map.containsKey(code)) map[code] = 0;
@@ -175,15 +190,17 @@ class BalanceRepository {
 
     final total = BalanceMath.toMinor(original.totalPayable);
     final deposit = BalanceMath.toMinor(original.depositPaid);
+    final writtenOff = WriteoffTotals.read()[code] ?? 0;
     return BalanceLookup.found(
       original: original,
       totalMinor: total,
       depositMinor: deposit,
       paidLaterMinor: paidLater,
+      writtenOffMinor: writtenOff,
       outstandingMinor: BalanceMath.outstandingMinor(
         totalMinor: total,
         depositMinor: deposit,
-        paidLaterMinor: paidLater,
+        paidLaterMinor: paidLater + writtenOff,
       ),
     );
   }

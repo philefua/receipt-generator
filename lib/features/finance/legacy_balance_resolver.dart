@@ -388,6 +388,10 @@ class LegacyBalanceResolver {
   static LegacyResolution resolve({
     required List<LegacyReceiptRecord> receipts,
     required List<ManualLinkRecord> manualLinks,
+
+    /// Amounts the manager has written off per sale ("Settle with
+    /// adjustment"). They reduce what a sale can still be paid.
+    Map<String, int> writeoffs = const {},
   }) {
     final byCode = <String, LegacyReceiptRecord>{
       for (final r in receipts) r.code: r,
@@ -425,7 +429,8 @@ class LegacyBalanceResolver {
           r.code: BalanceMath.outstandingMinor(
             totalMinor: r.totalMinor,
             depositMinor: r.depositMinor,
-            paidLaterMinor: phase5Paid[r.code] ?? 0,
+            paidLaterMinor:
+                (phase5Paid[r.code] ?? 0) + (writeoffs[r.code] ?? 0),
           ),
     };
 
@@ -703,6 +708,7 @@ class LegacyBalanceResolver {
     required String legacyCode,
     required String originalCode,
     required int appliedMinor,
+    Map<String, int> writeoffs = const {},
   }) {
     final byCode = <String, LegacyReceiptRecord>{
       for (final r in receipts) r.code: r,
@@ -736,7 +742,8 @@ class LegacyBalanceResolver {
       for (final l in manualLinks)
         if (l.receiptCode != legacy.code) l,
     ];
-    final resolution = resolve(receipts: receipts, manualLinks: others);
+    final resolution =
+        resolve(receipts: receipts, manualLinks: others, writeoffs: writeoffs);
     final isOtherBalance = resolution.entries.any((e) => e.code == original.code);
     if (isOtherBalance) {
       return '$code is itself a balance receipt. Enter the original sale receipt.';

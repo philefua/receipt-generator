@@ -6,6 +6,7 @@ import 'balance_math.dart';
 import 'finance_boxes.dart';
 import 'legacy_balance_resolver.dart';
 import 'models/receipt_link.dart';
+import 'writeoff_totals.dart';
 
 /// Connects the pure [LegacyBalanceResolver] to Hive.
 ///
@@ -105,7 +106,9 @@ class LegacyLinkRepository {
       ];
 
   LegacyResolution resolve() => LegacyBalanceResolver.resolve(
-      receipts: records(), manualLinks: _manualRecords());
+      receipts: records(),
+      manualLinks: _manualRecords(),
+      writeoffs: WriteoffTotals.read());
 
   /// What the balance maths must add for linked legacy receipts. Works on the
   /// receipts the caller already has. Never throws: if anything goes wrong the
@@ -113,7 +116,9 @@ class LegacyLinkRepository {
   LegacyAdjustments adjustmentsFor(Iterable<Receipt> all) {
     try {
       final resolution = LegacyBalanceResolver.resolve(
-          receipts: _recordsFrom(all), manualLinks: _manualRecords());
+          receipts: _recordsFrom(all),
+          manualLinks: _manualRecords(),
+          writeoffs: WriteoffTotals.read());
       return LegacyAdjustments(
         payments: resolution.payments,
         linkedCodes: resolution.linkedCodes,
@@ -166,6 +171,7 @@ class LegacyLinkRepository {
       legacyCode: legacyCode,
       originalCode: originalCode,
       appliedMinor: BalanceMath.toMinor(amount),
+      writeoffs: WriteoffTotals.read(),
     );
     if (problem != null) return problem;
 

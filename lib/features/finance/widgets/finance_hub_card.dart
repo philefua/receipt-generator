@@ -6,6 +6,8 @@ import '../finance_repository.dart';
 import '../legacy_link_repository.dart';
 import '../screens/expenses_page.dart';
 import '../screens/finance_settings_page.dart';
+import '../screens/settle_balances_page.dart';
+import '../settlement_repository.dart';
 import '../screens/unmatched_balance_payments_page.dart';
 
 /// The single entry card shown inside the Manager Backend (behind the manager
@@ -64,6 +66,22 @@ class FinanceHubCard extends StatelessWidget {
                 label: Text(unmatched > 0
                     ? 'Unmatched balance payments ($unmatched)'
                     : 'Unmatched balance payments'),
+              ),
+              const SizedBox(height: 8),
+            ],
+            if (ready && SettlementRepository.instance.isReady) ...[
+              OutlinedButton.icon(
+                onPressed: () {
+                  try {
+                    Navigator.of(context).push(MaterialPageRoute(
+                        builder: (_) => const SettleBalancesPage()));
+                  } catch (_) {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                        content: Text('Could not open Settle with adjustment.')));
+                  }
+                },
+                icon: const Icon(Icons.balance_outlined),
+                label: const Text('Settle with adjustment'),
               ),
               const SizedBox(height: 8),
             ],
