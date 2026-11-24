@@ -391,4 +391,41 @@ void main() {
       expect(res.linkedCodes.contains('ZKq01'), isFalse);
     });
   });
+
+  group('number typed with no balance wording', () {
+    test('an item that is just the original number links automatically', () {
+      final r = run([
+        sale('ZKx01', d17, total: 10000, deposit: 4000), // owes 6000
+        sale('ZKx02', d18, total: 6000, deposit: 6000, items: ['ZKx01']),
+      ]);
+      final e = entryOf(r, 'ZKx02');
+      expect(e.status, LegacyStatus.linkedAuto);
+      expect(e.originalCode, 'ZKx01');
+      expect(e.appliedMinor, m(6000));
+    });
+
+    test('a short prefix such as Item-ZKx01 still counts', () {
+      final r = run([
+        sale('ZKx01', d17),
+        sale('ZKx02', d18, total: 6000, deposit: 6000, items: ['Item-ZKx01']),
+      ]);
+      expect(entryOf(r, 'ZKx02').status, LegacyStatus.linkedAuto);
+    });
+
+    test('a sentence that merely mentions a number is not a balance', () {
+      final r = run([
+        sale('ZKx01', d17),
+        sale('ZKx02', d18, items: ['Reprint of banner from ZKx01']),
+      ]);
+      expect(r.entries, isEmpty);
+    });
+
+    test('a bare number that matches no receipt is ignored', () {
+      final r = run([
+        sale('ZKx01', d17),
+        sale('ZKx02', d18, items: ['ZKx09']),
+      ]);
+      expect(r.entries, isEmpty);
+    });
+  });
 }

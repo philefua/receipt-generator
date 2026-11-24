@@ -304,6 +304,24 @@ class LegacyBalanceResolver {
   static bool _hasKeyword(LegacyReceiptRecord r) =>
       _texts(r).any(_keyword.hasMatch);
 
+  /// An item that is essentially just the number of an existing receipt
+  /// (for example "ZKx01" or "Item-ZKx01"), typed as the whole item with no
+  /// balance wording. The number must belong to a different, existing receipt,
+  /// so this is a very strong sign of an old balance payment.
+  static bool _isBareReference(
+      LegacyReceiptRecord r, Map<String, LegacyReceiptRecord> byCode) {
+    for (final text in _texts(r)) {
+      for (final m in _strictToken.allMatches(text)) {
+        final code = m.group(0)!;
+        if (code == r.code || !byCode.containsKey(code)) continue;
+        final rest = text.replaceRange(m.start, m.end, ' ');
+        final words = RegExp(r'[A-Za-z0-9]+').allMatches(rest).length;
+        if (words <= 1) return true;
+      }
+    }
+    return false;
+  }
+
   static List<String> _tokensIn(LegacyReceiptRecord r) {
     final texts = _texts(r);
     final strict = _distinct([
@@ -386,7 +404,9 @@ class LegacyBalanceResolver {
     for (final r in receipts) {
       if (r.isBalanceType) continue;
       final manual = manualByReceipt[r.code];
-      if (!_hasKeyword(r) && manual == null) continue;
+      if (!_hasKeyword(r) && manual == null && !_isBareReference(r, byCode)) {
+        continue;
+      }
       final tokens = _tokensIn(r);
       cands[r.code] = _Cand(r, tokens, _isMixed(r, tokens), manual);
     }
