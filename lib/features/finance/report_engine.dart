@@ -33,8 +33,36 @@ class ReportEngine {
   /// Cash by method when the method is not known (for example sale proceeds).
   static const String notRecorded = 'Not recorded';
 
-  static ReportData generate(ReportInput input, ReportPeriod period) =>
-      _Builder(input, period).build();
+  /// Fixed wording for how figures are recognised (handoff 6.4).
+  static const List<String> basis = [
+    'Sales revenue is counted once, on the original receipt date, at the full '
+        'receipt value, whatever the deposit.',
+    'Balance payments never add to sales. They only affect Cashflow and '
+        'Receivables.',
+    'Direct costs and operating expenses are counted when incurred (the '
+        'expense date).',
+    'Cashflow is cash-basis: it follows when money actually moved.',
+    'Asset purchases are capitalised. They never hit the P&L at purchase; '
+        'their cost reaches the P&L gradually as depreciation, which is '
+        'non-cash and left out of Cashflow.',
+    'Loan receipts are not income and principal repayments are not expenses. '
+        'Only the interest part of a repayment is a cost, counted on the day '
+        'it is paid, with no accrual of unpaid interest.',
+    'Interest paid is a finance cost below operating profit in the P&L and '
+        'its own line under Financing in Cashflow.',
+    'Not in P&L expenses (owner drawings, tax remittances) never reach the '
+        'P&L. They appear only in Cashflow.',
+    'Settlement adjustments (written-off balances) reduce revenue and '
+        'Receivables but move no cash.',
+  ];
+
+  static ReportData generate(
+    ReportInput input,
+    ReportPeriod period, {
+    DateTime? generatedAt,
+    String appVersion = '',
+  }) =>
+      _Builder(input, period, generatedAt, appVersion).build();
 }
 
 class _Pay {
@@ -84,6 +112,8 @@ class _Cash {
 class _Builder {
   final ReportInput input;
   final ReportPeriod period;
+  final DateTime? generatedAt;
+  final String appVersion;
 
   late final Map<String, LegacyBalanceEntry> legacy = {
     for (final e in input.legacy.entries) e.code: e,
@@ -93,7 +123,7 @@ class _Builder {
   /// linked old balance receipts, and write-offs.
   late final Map<String, List<_Pay>> payments = _indexPayments();
 
-  _Builder(this.input, this.period);
+  _Builder(this.input, this.period, this.generatedAt, this.appVersion);
 
   static DateTime _day(DateTime d) => DateTime(d.year, d.month, d.day);
 
@@ -464,6 +494,13 @@ class _Builder {
       unmatchedCount: input.legacy.needsReviewCount,
     );
 
+    final fixedAssets = _buildFixedAssets();
+    final loans = _buildLoans(liveRepayments);
+    final filing = _buildFiling(pnl, expenses, receivables, counts, assetNbv,
+        loansOutstanding);
+    final unmatched = _buildUnmatched();
+    final notes = _buildNotes(pnl, cashflow, expenses, unmatched, adjustments);
+
     return ReportData(
       from: from,
       to: to,
@@ -474,6 +511,11 @@ class _Builder {
       pnl: pnl,
       cashflow: cashflow,
       receivables: receivables,
+      fixedAssets: fixedAssets,
+      loans: loans,
+      filing: filing,
+      unmatched: unmatched,
+      notes: notes,
     );
   }
 
@@ -482,6 +524,357 @@ class _Builder {
       if (l.id == loanId) return l.spec.voided;
     }
     return false;
+  }
+
+  // ---- fixed assets ------------------------------------------------------------
+
+  FixedAssetsSection _buildFixedAssets() {
+    final from = period.from;
+    final to = period.to;
+    // Depreciation is charged in whole months, so the "start" balance is the
+    // end of the month before the period's first month. That keeps start +
+    // charge = end for every asset.
+    final startBoundary = DateTime(from.year, from.month, 0);
+
+    final assets = [...input.assets]..sort((a, b) {
+        final d = a.spec.purchaseDate.compareTo(b.spec.purchaseDate);
+        return d != 0 ? d : a.id.compareTo(b.id);
+      });
+
+    final rows = <FixedAssetRow>[];
+    final additions = <AssetAddition>[];
+    final disposals = <AssetDisposal>[];
+
+    for (final a in assets) {
+      final s = a.spec;
+      if (s.voided || _day(s.purchaseDate).isAfter(to)) continue;
+      final retired = s.retiredDate;
+      final retiredBefore = retired != null &&
+          Depreciation.monthIndex(retired) < Depreciation.monthIndex(from);
+      if (retiredBefore) continue;
+
+      final accStart = Depreciation.accumulated(s, startBoundary);
+      final accEnd = Depreciation.accumulated(s, to);
+      final disposedByEnd = retired != null && !_day(retired).isAfter(to);
+      final retiredIn = Depreciation.retiredWithin(s, from, to);
+
+      rows.add(FixedAssetRow(
+        name: a.name,
+        categoryName: a.categoryName,
+        purchaseDate: _day(s.purchaseDate),
+        costMinor: s.costMinor,
+        method: s.reducingBalance ? 'Reducing balance' : 'Straight-line',
+        isOpeningBalance: a.isOpeningBalance,
+        accumulatedAtStartMinor: accStart,
+        chargeMinor: accEnd - accStart,
+        accumulatedAtEndMinor: accEnd,
+        netBookValueMinor: s.costMinor - accEnd,
+        carryingMinor: disposedByEnd ? 0 : s.costMinor - accEnd,
+        retiredDate: retired == null ? null : _day(retired),
+        retiredInPeriod: retiredIn,
+      ));
+
+      if (_in(s.purchaseDate, from, to)) {
+        additions.add(AssetAddition(
+          name: a.name,
+          purchaseDate: _day(s.purchaseDate),
+          costMinor: s.costMinor,
+          isOpeningBalance: a.isOpeningBalance,
+          paymentMethod: a.paymentMethod,
+        ));
+      }
+      if (retiredIn) {
+        final d = Depreciation.disposal(s)!;
+        disposals.add(AssetDisposal(
+          name: a.name,
+          date: _day(retired!),
+          proceedsMinor: d.proceedsMinor,
+          nbvAtDisposalMinor: d.nbvMinor,
+          gainLossMinor: d.gainLossMinor,
+        ));
+      }
+    }
+
+    disposals.sort((a, b) {
+      final d = a.date.compareTo(b.date);
+      return d != 0 ? d : a.name.compareTo(b.name);
+    });
+
+    int sumRows(int Function(FixedAssetRow r) f) =>
+        rows.fold(0, (t, r) => t + f(r));
+    return FixedAssetsSection(
+      rows: rows,
+      additions: additions,
+      disposals: disposals,
+      costMinor: sumRows((r) => r.costMinor),
+      accumulatedAtStartMinor: sumRows((r) => r.accumulatedAtStartMinor),
+      chargeMinor: sumRows((r) => r.chargeMinor),
+      accumulatedAtEndMinor: sumRows((r) => r.accumulatedAtEndMinor),
+      netBookValueMinor: sumRows((r) => r.netBookValueMinor),
+      carryingMinor: sumRows((r) => r.carryingMinor),
+      additionsCostMinor: additions.fold(0, (t, x) => t + x.costMinor),
+      additionsCashMinor: additions
+          .where((x) => !x.isOpeningBalance)
+          .fold(0, (t, x) => t + x.costMinor),
+      disposalProceedsMinor: disposals.fold(0, (t, x) => t + x.proceedsMinor),
+      disposalNbvMinor: disposals.fold(0, (t, x) => t + x.nbvAtDisposalMinor),
+      disposalGainLossMinor: disposals.fold(0, (t, x) => t + x.gainLossMinor),
+    );
+  }
+
+  // ---- loans -------------------------------------------------------------------
+
+  LoansSection _buildLoans(List<RepaymentSpec> live) {
+    final from = period.from;
+    final to = period.to;
+    final lenderById = {for (final l in input.loans) l.id: l.lenderName};
+
+    final rows = <LoanRowData>[];
+    for (final l in input.loans) {
+      if (l.spec.voided) continue;
+      // A loan that already existed counts from the start of time.
+      final spec = l.isOpeningBalance
+          ? LoanSpec(
+              id: l.spec.id,
+              dateReceived: DateTime(1900),
+              principalMinor: l.spec.principalMinor,
+            )
+          : l.spec;
+      final start = LoanMath.outstanding(spec, live, asOf: period.dayBefore);
+      final end = LoanMath.outstanding(spec, live, asOf: to);
+      final received = (!l.isOpeningBalance && _in(l.spec.dateReceived, from, to))
+          ? l.spec.principalMinor
+          : 0;
+      final paid = LoanMath.repaymentsBetween(
+          [for (final r in live) if (r.loanId == l.id) r], from, to);
+      if (start == 0 &&
+          received == 0 &&
+          end == 0 &&
+          paid.principalMinor == 0 &&
+          paid.interestMinor == 0) {
+        continue;
+      }
+      rows.add(LoanRowData(
+        lenderName: l.lenderName,
+        lenderType: l.lenderType,
+        isOpeningBalance: l.isOpeningBalance,
+        balanceAtStartMinor: start,
+        receivedMinor: received,
+        principalRepaidMinor: paid.principalMinor,
+        balanceAtEndMinor: end,
+        interestPaidMinor: paid.interestMinor,
+        settled: end == 0 && (start > 0 || received > 0),
+      ));
+    }
+    rows.sort((a, b) => a.lenderName.compareTo(b.lenderName));
+
+    final repayments = <LoanRepaymentRow>[];
+    for (final p in input.repayments) {
+      final r = p.spec;
+      if (r.voided || !_in(r.date, from, to)) continue;
+      if (!lenderById.containsKey(r.loanId) || _loanIsVoided(r.loanId)) continue;
+      repayments.add(LoanRepaymentRow(
+        date: _day(r.date),
+        lenderName: lenderById[r.loanId]!,
+        principalMinor: r.principalMinor,
+        interestMinor: r.interestMinor,
+        paymentMethod: p.paymentMethod,
+        note: p.note,
+      ));
+    }
+    repayments.sort((a, b) {
+      final d = a.date.compareTo(b.date);
+      return d != 0 ? d : a.lenderName.compareTo(b.lenderName);
+    });
+
+    int sum(int Function(LoanRowData r) f) => rows.fold(0, (t, r) => t + f(r));
+    return LoansSection(
+      rows: rows,
+      repayments: repayments,
+      balanceAtStartMinor: sum((r) => r.balanceAtStartMinor),
+      receivedMinor: sum((r) => r.receivedMinor),
+      principalRepaidMinor: sum((r) => r.principalRepaidMinor),
+      balanceAtEndMinor: sum((r) => r.balanceAtEndMinor),
+      interestPaidMinor: sum((r) => r.interestPaidMinor),
+    );
+  }
+
+  // ---- filing figures ----------------------------------------------------------
+
+  FilingSection _buildFiling(
+    PnlSection pnl,
+    ExpensesSection expenses,
+    ReceivablesSection receivables,
+    List<ReportStockCount> counts,
+    int assetNbv,
+    int loansOutstanding,
+  ) {
+    final s = input.settings;
+
+    // VAT noted on expenses in the period, not voided.
+    var inputVat = 0;
+    for (final x in input.expenses) {
+      if (x.voided || !_in(x.date, period.from, period.to)) continue;
+      inputVat += x.inputVatMinor ?? 0;
+    }
+
+    int? vatCollected;
+    int? vatPayable;
+    if (s.vatEnabled) {
+      // Receipt totals are taken to include VAT.
+      final rate = s.vatRatePercent;
+      vatCollected = rate > 0
+          ? ((pnl.revenueMinor * rate) / (100 + rate)).round()
+          : 0;
+      vatPayable = vatCollected - inputVat;
+    }
+
+    int? closingStock;
+    for (final c in counts) {
+      if (!_day(c.date).isAfter(period.to)) closingStock = c.valueMinor;
+    }
+
+    return FilingSection(
+      turnoverMinor: pnl.revenueMinor,
+      directCostsMinor: pnl.directCostsMinor,
+      operatingExpensesMinor: pnl.operatingExpensesMinor,
+      bookDepreciationMinor: pnl.depreciationMinor,
+      interestPaidMinor: pnl.interestPaidMinor,
+      disposalGainLossMinor: pnl.disposalGainLossMinor,
+      netProfitBeforeTaxMinor: pnl.netProfitBeforeTaxMinor,
+      vatEnabled: s.vatEnabled,
+      vatRatePercent: s.vatRatePercent,
+      vatCollectedMinor: vatCollected,
+      inputVatPaidMinor: inputVat,
+      vatPayableMinor: vatPayable,
+      estimatedTaxMinor:
+          s.estimatedTaxRatePercent > 0 ? pnl.estimatedTaxMinor : null,
+      receivablesMinor: receivables.totalMinor,
+      closingStockMinor: closingStock,
+      assetNetBookValueMinor: assetNbv,
+      loansOutstandingMinor: loansOutstanding,
+    );
+  }
+
+  // ---- unmatched balance payments --------------------------------------------
+
+  UnmatchedSection _buildUnmatched() {
+    final rows = <UnmatchedRow>[];
+    for (final e in input.legacy.entries) {
+      if (e.isLinked) continue;
+      rows.add(UnmatchedRow(
+        code: e.code,
+        date: _day(e.issuedAt),
+        customerName: e.customerName,
+        paidMinor: e.paidMinor,
+        reason: e.reason?.label ?? '',
+        textSnippet: e.textSnippet,
+        referencesFound: e.referencesFound.join(', '),
+        suggestions: [for (final x in e.suggestions.take(3)) x.code],
+        inPeriod: _in(e.issuedAt, period.from, period.to),
+      ));
+    }
+    rows.sort((a, b) {
+      final d = a.date.compareTo(b.date);
+      return d != 0 ? d : a.code.compareTo(b.code);
+    });
+    return UnmatchedSection(rows: rows);
+  }
+
+  // ---- notes -------------------------------------------------------------------
+
+  static String _money(int minor) {
+    final neg = minor < 0;
+    final v = neg ? -minor : minor;
+    final whole = (v ~/ 100).toString();
+    final cents = (v % 100).toString().padLeft(2, '0');
+    final buf = StringBuffer();
+    for (var i = 0; i < whole.length; i++) {
+      if (i > 0 && (whole.length - i) % 3 == 0) buf.write(',');
+      buf.write(whole[i]);
+    }
+    return '${neg ? '-' : ''}$buf.$cents';
+  }
+
+  static String _date(DateTime d) =>
+      '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+
+  NotesSection _buildNotes(
+    PnlSection pnl,
+    CashflowSection cashflow,
+    ExpensesSection expenses,
+    UnmatchedSection unmatched,
+    int adjustments,
+  ) {
+    final s = input.settings;
+    final notes = <String>[
+      'Period: ${_date(period.from)} to ${_date(period.to)}.',
+    ];
+
+    if (pnl.stockAdjusted) {
+      notes.add('Direct costs include a stock adjustment: opening stock '
+          '${_money(pnl.openingStockMinor!)} + purchases '
+          '${_money(pnl.purchasesMinor)} - closing stock '
+          '${_money(pnl.closingStockMinor!)}.');
+    } else {
+      notes.add('No stock adjustment: direct costs equal purchases in the '
+          'period. It needs a stock count on or before the day before the '
+          'period starts and another on or before its end.');
+    }
+
+    final lastDay = DateTime(period.to.year, period.to.month + 1, 0).day;
+    if (period.from.day != 1 || period.to.day != lastDay) {
+      notes.add('This period does not start and end on month boundaries. '
+          'Depreciation is charged in whole months, so figures for periods '
+          'that overlap will not add up.');
+    }
+
+    if (cashflow.openingCashAfterPeriodStart) {
+      notes.add('The opening cash date is after this period starts, so the '
+          'opening balance is shown as entered and earlier cash movements '
+          'are not included.');
+    }
+
+    if (unmatched.count > 0) {
+      notes.add('${unmatched.count} old balance receipt(s) are not linked to '
+          'their sale yet. Until they are linked they are counted as sales. '
+          'See the Unmatched Balance Payments sheet.');
+    }
+
+    if (adjustments > 0) {
+      notes.add('Settlement adjustments of ${_money(adjustments)} (written-off '
+          'balances) were deducted from revenue and from receivables. No cash '
+          'moved.');
+    }
+
+    if (s.vatEnabled) {
+      notes.add('VAT collected is worked out from sales as if receipt totals '
+          'include VAT at ${s.vatRatePercent}%. Input VAT is the figure '
+          'noted on expenses and is information only.');
+    }
+
+    if (s.estimatedTaxRatePercent > 0) {
+      notes.add('Estimated tax is an estimate only: '
+          '${s.estimatedTaxRatePercent}% of net profit before tax, and only '
+          'when that profit is above zero.');
+    }
+
+    notes.add('Not in P&L categories other than Owner drawings are treated as '
+        'tax or similar remittances in Cashflow (operating). Owner drawings '
+        'are shown under Financing.');
+    notes.add('Equipment and loans entered as opening balances create no cash '
+        'movement.');
+    if (expenses.voidedRows.isNotEmpty) {
+      notes.add('${expenses.voidedRows.length} voided expense(s) are listed on '
+          'the Expenses sheet and are not counted anywhere.');
+    }
+
+    return NotesSection(
+      generatedAt: generatedAt,
+      appVersion: appVersion,
+      basis: ReportEngine.basis,
+      notes: notes,
+    );
   }
 
   // ---- sales -----------------------------------------------------------------

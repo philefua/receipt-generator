@@ -335,6 +335,326 @@ class ReceivablesSection {
   const ReceivablesSection({required this.rows, required this.totalMinor});
 }
 
+// ---- Fixed assets ------------------------------------------------------------
+
+class FixedAssetRow {
+  final String name;
+  final String categoryName;
+  final DateTime purchaseDate;
+  final int costMinor;
+
+  /// Straight-line or Reducing balance.
+  final String method;
+  final bool isOpeningBalance;
+  final int accumulatedAtStartMinor;
+  final int chargeMinor;
+  final int accumulatedAtEndMinor;
+
+  /// Cost less depreciation to the end. For a retired asset this is its book
+  /// value when it was retired.
+  final int netBookValueMinor;
+
+  /// What the asset is worth on the books at the end: zero once retired.
+  final int carryingMinor;
+  final DateTime? retiredDate;
+  final bool retiredInPeriod;
+
+  const FixedAssetRow({
+    required this.name,
+    required this.categoryName,
+    required this.purchaseDate,
+    required this.costMinor,
+    required this.method,
+    required this.isOpeningBalance,
+    required this.accumulatedAtStartMinor,
+    required this.chargeMinor,
+    required this.accumulatedAtEndMinor,
+    required this.netBookValueMinor,
+    required this.carryingMinor,
+    this.retiredDate,
+    this.retiredInPeriod = false,
+  });
+}
+
+class AssetAddition {
+  final String name;
+  final DateTime purchaseDate;
+  final int costMinor;
+
+  /// Equipment already owned: no cash left the business.
+  final bool isOpeningBalance;
+  final String paymentMethod;
+
+  const AssetAddition({
+    required this.name,
+    required this.purchaseDate,
+    required this.costMinor,
+    required this.isOpeningBalance,
+    required this.paymentMethod,
+  });
+}
+
+class AssetDisposal {
+  final String name;
+  final DateTime date;
+  final int proceedsMinor;
+  final int nbvAtDisposalMinor;
+
+  /// Proceeds less book value. Negative is a loss.
+  final int gainLossMinor;
+
+  const AssetDisposal({
+    required this.name,
+    required this.date,
+    required this.proceedsMinor,
+    required this.nbvAtDisposalMinor,
+    required this.gainLossMinor,
+  });
+}
+
+class FixedAssetsSection {
+  final List<FixedAssetRow> rows;
+  final List<AssetAddition> additions;
+  final List<AssetDisposal> disposals;
+  final int costMinor;
+  final int accumulatedAtStartMinor;
+
+  /// Ties to the depreciation line on the P&L.
+  final int chargeMinor;
+  final int accumulatedAtEndMinor;
+  final int netBookValueMinor;
+
+  /// Ties to the asset net book value on the Summary.
+  final int carryingMinor;
+  final int additionsCostMinor;
+
+  /// Additions that moved cash. Ties to asset purchases in Cashflow.
+  final int additionsCashMinor;
+
+  /// Ties to disposal proceeds in Cashflow.
+  final int disposalProceedsMinor;
+  final int disposalNbvMinor;
+
+  /// Ties to gain or loss on disposal on the P&L.
+  final int disposalGainLossMinor;
+
+  const FixedAssetsSection({
+    required this.rows,
+    required this.additions,
+    required this.disposals,
+    required this.costMinor,
+    required this.accumulatedAtStartMinor,
+    required this.chargeMinor,
+    required this.accumulatedAtEndMinor,
+    required this.netBookValueMinor,
+    required this.carryingMinor,
+    required this.additionsCostMinor,
+    required this.additionsCashMinor,
+    required this.disposalProceedsMinor,
+    required this.disposalNbvMinor,
+    required this.disposalGainLossMinor,
+  });
+}
+
+// ---- Loans -------------------------------------------------------------------
+
+class LoanRowData {
+  final String lenderName;
+  final String lenderType;
+  final bool isOpeningBalance;
+  final int balanceAtStartMinor;
+
+  /// Cash received in the period. Zero for a loan entered as an opening balance.
+  final int receivedMinor;
+  final int principalRepaidMinor;
+  final int balanceAtEndMinor;
+  final int interestPaidMinor;
+
+  /// True when the loan has nothing left to pay at the end.
+  final bool settled;
+
+  const LoanRowData({
+    required this.lenderName,
+    required this.lenderType,
+    required this.isOpeningBalance,
+    required this.balanceAtStartMinor,
+    required this.receivedMinor,
+    required this.principalRepaidMinor,
+    required this.balanceAtEndMinor,
+    required this.interestPaidMinor,
+    required this.settled,
+  });
+}
+
+class LoanRepaymentRow {
+  final DateTime date;
+  final String lenderName;
+  final int principalMinor;
+  final int interestMinor;
+  final String paymentMethod;
+  final String note;
+
+  const LoanRepaymentRow({
+    required this.date,
+    required this.lenderName,
+    required this.principalMinor,
+    required this.interestMinor,
+    required this.paymentMethod,
+    required this.note,
+  });
+}
+
+class LoansSection {
+  final List<LoanRowData> rows;
+
+  /// Repayments dated in the period, not voided, oldest first.
+  final List<LoanRepaymentRow> repayments;
+  final int balanceAtStartMinor;
+  final int receivedMinor;
+  final int principalRepaidMinor;
+  final int balanceAtEndMinor;
+
+  /// Ties to the interest line on the P&L and in Cashflow.
+  final int interestPaidMinor;
+
+  const LoansSection({
+    required this.rows,
+    required this.repayments,
+    required this.balanceAtStartMinor,
+    required this.receivedMinor,
+    required this.principalRepaidMinor,
+    required this.balanceAtEndMinor,
+    required this.interestPaidMinor,
+  });
+}
+
+// ---- Filing figures ----------------------------------------------------------
+
+class FilingSection {
+  static const String disclaimer =
+      'Prepared figures for your accountant or tax filing. This is not a '
+      'completed tax return. Book depreciation differs from tax capital '
+      'allowances; give your accountant the Fixed Assets sheet.';
+
+  final int turnoverMinor;
+  final int directCostsMinor;
+  final int operatingExpensesMinor;
+  final int bookDepreciationMinor;
+  final int interestPaidMinor;
+  final int disposalGainLossMinor;
+  final int netProfitBeforeTaxMinor;
+  final bool vatEnabled;
+  final double vatRatePercent;
+
+  /// Null when VAT is not switched on.
+  final int? vatCollectedMinor;
+
+  /// VAT noted on expenses that are not voided. Information only.
+  final int inputVatPaidMinor;
+
+  /// VAT collected less input VAT. Null when VAT is not switched on.
+  final int? vatPayableMinor;
+
+  /// Null when no tax rate is set.
+  final int? estimatedTaxMinor;
+  final int receivablesMinor;
+
+  /// Latest stock count on or before the end of the period, if any.
+  final int? closingStockMinor;
+  final int assetNetBookValueMinor;
+  final int loansOutstandingMinor;
+
+  const FilingSection({
+    required this.turnoverMinor,
+    required this.directCostsMinor,
+    required this.operatingExpensesMinor,
+    required this.bookDepreciationMinor,
+    required this.interestPaidMinor,
+    required this.disposalGainLossMinor,
+    required this.netProfitBeforeTaxMinor,
+    required this.vatEnabled,
+    required this.vatRatePercent,
+    required this.vatCollectedMinor,
+    required this.inputVatPaidMinor,
+    required this.vatPayableMinor,
+    required this.estimatedTaxMinor,
+    required this.receivablesMinor,
+    required this.closingStockMinor,
+    required this.assetNetBookValueMinor,
+    required this.loansOutstandingMinor,
+  });
+}
+
+// ---- Unmatched balance payments ------------------------------------------------
+
+class UnmatchedRow {
+  final String code;
+  final DateTime date;
+  final String customerName;
+
+  /// Money received on this receipt.
+  final int paidMinor;
+
+  /// Why it could not be linked.
+  final String reason;
+
+  /// What was written on the receipt.
+  final String textSnippet;
+
+  /// Receipt numbers found in that text.
+  final String referencesFound;
+
+  /// Up to three sales it might belong to. Never applied automatically.
+  final List<String> suggestions;
+
+  /// Dated inside this report's period. Receipts like this stay in sales
+  /// until they are linked.
+  final bool inPeriod;
+
+  const UnmatchedRow({
+    required this.code,
+    required this.date,
+    required this.customerName,
+    required this.paidMinor,
+    required this.reason,
+    required this.textSnippet,
+    required this.referencesFound,
+    required this.suggestions,
+    required this.inPeriod,
+  });
+}
+
+class UnmatchedSection {
+  /// Every old balance receipt still waiting to be linked, oldest first. The
+  /// workbook only gets this sheet when the list is not empty.
+  final List<UnmatchedRow> rows;
+
+  const UnmatchedSection({required this.rows});
+
+  bool get isNotEmpty => rows.isNotEmpty;
+  int get count => rows.length;
+}
+
+// ---- Notes ------------------------------------------------------------------
+
+class NotesSection {
+  final DateTime? generatedAt;
+  final String appVersion;
+
+  /// How figures are recognised (fixed wording).
+  final List<String> basis;
+
+  /// Things about this particular report the reader should know.
+  final List<String> notes;
+
+  const NotesSection({
+    required this.generatedAt,
+    required this.appVersion,
+    required this.basis,
+    required this.notes,
+  });
+}
+
 // ---- Summary and whole report ----------------------------------------------
 
 class SummarySection {
@@ -391,6 +711,11 @@ class ReportData {
   final PnlSection pnl;
   final CashflowSection cashflow;
   final ReceivablesSection receivables;
+  final FixedAssetsSection fixedAssets;
+  final LoansSection loans;
+  final FilingSection filing;
+  final UnmatchedSection unmatched;
+  final NotesSection notes;
 
   const ReportData({
     required this.from,
@@ -402,5 +727,10 @@ class ReportData {
     required this.pnl,
     required this.cashflow,
     required this.receivables,
+    required this.fixedAssets,
+    required this.loans,
+    required this.filing,
+    required this.unmatched,
+    required this.notes,
   });
 }
