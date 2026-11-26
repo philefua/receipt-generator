@@ -68,12 +68,18 @@ class _ManagerBackupPageState extends State<ManagerBackupPage> {
         return;
       }
 
+      final current = await BackupService.currentCounts();
+      if (!mounted) {
+        await BackupService.cancelRestore();
+        return;
+      }
+
       final confirmed = await showDialog<bool>(
         context: context,
         barrierDismissible: false,
         builder: (_) => _ConfirmRestoreDialog(
           preview: preview,
-          current: BackupService.currentCounts(),
+          current: current,
         ),
       );
       if (confirmed != true) {
