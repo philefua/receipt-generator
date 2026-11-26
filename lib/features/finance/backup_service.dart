@@ -7,6 +7,8 @@ import 'package:hive/hive.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'finance_boxes.dart';
+import 'finance_repository.dart';
+import 'report_period.dart';
 
 /// A problem the manager should be told about in plain words.
 class BackupException implements Exception {
@@ -45,11 +47,6 @@ class RestorePreview {
 ///
 /// Never included: the licence box (`license_state`) and Google tokens.
 /// The manager password is only ever stored as a hash, which is included.
-///
-/// Hive refuses to hand out an already-open box under a different type than
-/// it was opened with. The app opens most boxes with their own types, so this
-/// class never asks Hive for those boxes. It reads their files from disk and
-/// counts records by opening a private copy as a temporary box.
 class BackupService {
   BackupService._();
 
@@ -97,7 +94,6 @@ class BackupService {
   static const String metaBoxName = 'backup_meta_box';
   static const String _pendingDir = 'restore_pending';
   static const String _checkDir = 'restore_check';
-  static const String _countDir = 'backup_count_tmp';
   static const String _snapshotRoot = 'backup_snapshots';
   static const String _filePrefix = 'Printiverse_backup_';
   static const int _keepSnapshots = 3;
@@ -154,11 +150,38 @@ class BackupService {
     return v == null ? null : DateTime.tryParse(v);
   }
 
-  /// True when no backup file was ever made, or the last one is 7+ days old.
-  static bool reminderDue() {
-    final t = lastBackupAt();
-    return t == null || DateTime.now().difference(t).inDays >= reminderDays;
+  /// The financial-year start month from Finance Settings (1 if unavailable).
+  static int currentStartMonth() {
+    try {
+      final m = FinanceRepository.instance.settings.financialYearStartMonth;
+      return m < 1 ? 1 : (m > 12 ? 12 : m);
+    } catch (_) {
+      return 1;
+    }
   }
+
+  /// Why a backup is wanted now, in plain words, or null when none is.
+  /// A backup is wanted when none was ever made, when the last is 7+ days
+  /// old, or when a new financial year has started since the last one.
+  static String? reminderMessage({int startMonth = 1, DateTime? now}) {
+    final today = now ?? DateTime.now();
+    final last = lastBackupAt();
+    if (last == null) {
+      return 'No backup has been made on this device yet.';
+    }
+    if (today.difference(last).inDays >= reminderDays) {
+      return 'Your last backup is more than $reminderDays days old.';
+    }
+    final yearStart = ReportPeriod.financialYearStart(today, startMonth);
+    if (last.isBefore(yearStart)) {
+      return 'A new financial year has started and there is no backup since. '
+          'Back up now to keep a copy of the closed year.';
+    }
+    return null;
+  }
+
+  static bool reminderDue({int startMonth = 1, DateTime? now}) =>
+      reminderMessage(startMonth: startMonth, now: now) != null;
 
   static Future<void> recordBackupCreated() async {
     await openMeta();
@@ -186,53 +209,31 @@ class BackupService {
   // Backup
   // ---------------------------------------------------------------------
 
-  /// Counts the records in a copy of a box file. The copy is opened as its
-  /// own temporary box, so this works whatever type the live box was opened
-  /// with, and the live box is never touched.
-  static Future<int> _countRecords(
-      String name, List<int> bytes, Directory dir) async {
-    final tmp = Directory('${dir.path}/$_countDir');
-    final lower = name.toLowerCase();
-    try {
-      await _deleteDir(tmp);
-      await tmp.create(recursive: true);
-      await File('${tmp.path}/cnt_$lower.hive')
-          .writeAsBytes(bytes, flush: true);
-      final box = await Hive.openBox<dynamic>('cnt_$lower', path: tmp.path);
-      final n = box.length;
-      await box.close();
-      return n;
-    } finally {
-      try {
-        await _deleteDir(tmp);
-      } catch (_) {}
-    }
-  }
+  /// Record counts in the boxes on this device right now.
+  static Map<String, int> currentCounts() => <String, int>{
+        for (final n in allBoxNames)
+          n: Hive.isBoxOpen(n) ? Hive.box(n).length : 0,
+      };
 
-  /// Record counts for the data on this device right now. Reads each box's
-  /// file, so it does not matter how the app opened the box.
-  static Future<Map<String, int>> currentCounts() async {
-    final dir = await _docs();
-    final counts = <String, int>{};
-    for (final n in allBoxNames) {
-      final f = File(_fileFor(dir, n));
-      counts[n] = await f.exists()
-          ? await _countRecords(n, await f.readAsBytes(), dir)
-          : 0;
-    }
-    return counts;
-  }
-
-  /// The box's file as it is on disk. Hive writes each change straight to
-  /// the file, so this is current. Null means the box was never created.
   static Future<List<int>?> _readBoxBytes(String name, Directory dir) async {
-    final f = File(_fileFor(dir, name));
-    if (await f.exists()) return f.readAsBytes();
+    String? path;
     if (Hive.isBoxOpen(name)) {
-      throw BackupException(
-          'The ${labelFor(name)} data file could not be found, so no backup was made.');
+      final box = Hive.box(name);
+      await box.flush();
+      path = box.path;
     }
-    return null;
+    path ??= _fileFor(dir, name);
+    final f = File(path);
+    if (!await f.exists()) return null;
+    return f.readAsBytes();
+  }
+
+  static Future<int> _recordCount(String name) async {
+    if (Hive.isBoxOpen(name)) return Hive.box(name).length;
+    final box = await Hive.openBox<dynamic>(name);
+    final n = box.length;
+    await box.close();
+    return n;
   }
 
   /// Builds the backup file in the app's documents folder.
@@ -248,7 +249,7 @@ class BackupService {
         counts[name] = 0;
         continue;
       }
-      final records = await _countRecords(name, bytes, dir);
+      final records = await _recordCount(name);
       counts[name] = records;
       entries.add(<String, dynamic>{
         'name': name,
