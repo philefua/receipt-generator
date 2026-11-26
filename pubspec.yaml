@@ -25,7 +25,7 @@ dependencies:
   permission_handler: ^11.4.0  # runtime Bluetooth permissions
 
   # --- Sharing receipt image (WhatsApp / generic share sheet) ---
-  share_plus: ^13.2.0
+  share_plus: 12.0.2
   screenshot: ^3.0.0           # render receipt widget -> PNG for sharing/printing
   url_launcher: ^6.3.1         # deep-link into a specific WhatsApp chat thread
 
@@ -38,6 +38,9 @@ dependencies:
   # --- History Export ---
   excel: ^4.0.6
   csv: ^6.0.0
+
+  # --- Backup restore (choose a backup file) ---
+  file_picker: ^10.0.0
 
   # --- Utility ---
   intl: ^0.19.0
