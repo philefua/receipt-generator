@@ -1,12 +1,14 @@
 import 'package:flutter/material.dart';
 
 import '../asset_repository.dart';
+import '../backup_service.dart';
 import '../finance_boxes.dart';
 import '../expense_repository.dart';
 import '../finance_repository.dart';
 import '../legacy_link_repository.dart';
 import '../loan_repository.dart';
 import '../screens/assets_page.dart';
+import '../screens/backup_page.dart';
 import '../screens/expenses_page.dart';
 import '../screens/finance_settings_page.dart';
 import '../screens/loans_page.dart';
@@ -17,9 +19,14 @@ import '../screens/unmatched_balance_payments_page.dart';
 
 /// The single entry card shown inside the Manager Backend (behind the manager
 /// password). Later phases add Reports, Assets and Loans here.
-class FinanceHubCard extends StatelessWidget {
+class FinanceHubCard extends StatefulWidget {
   const FinanceHubCard({super.key});
 
+  @override
+  State<FinanceHubCard> createState() => _FinanceHubCardState();
+}
+
+class _FinanceHubCardState extends State<FinanceHubCard> {
   @override
   Widget build(BuildContext context) {
     final ready = FinanceRepository.instance.isReady;
@@ -122,6 +129,25 @@ class FinanceHubCard extends StatelessWidget {
               ),
               const SizedBox(height: 8),
             ],
+            OutlinedButton.icon(
+              onPressed: () async {
+                try {
+                  await Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => const ManagerBackupPage()));
+                } catch (_) {
+                  if (!context.mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                      content: Text('Could not open Backup & Restore.')));
+                }
+                if (mounted) setState(() {});
+              },
+              icon: const Icon(Icons.backup_outlined),
+              label: Text(BackupService.reminderDue(
+                  startMonth: BackupService.currentStartMonth())
+                  ? 'Backup & Restore (backup due)'
+                  : 'Backup & Restore'),
+            ),
+            const SizedBox(height: 8),
             if (ready) ...[
               OutlinedButton.icon(
                 onPressed: () {

@@ -6,6 +6,7 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
+import 'features/finance/backup_service.dart';
 import 'features/finance/finance_boxes.dart';
 import 'features/finance/widgets/log_expense_action.dart';
 import 'models/business_settings.dart';
@@ -32,10 +33,14 @@ Future<void> main() async {
   Hive.registerAdapter(ReceiptAdapter());
   Hive.registerAdapter(LicenseStateAdapter());
   FinanceBoxes.registerAdapters();
+  // Finishes a restore the manager staged earlier. Must run before any box
+  // is opened. Never throws.
+  await BackupService.applyPendingRestore();
 
   final controller = AppStateController();
   await controller.init();
   await FinanceBoxes.openAll(); // never throws; finance is optional at launch
+  await BackupService.openMeta(); // remembers last backup / last restore
 
   runApp(
     ChangeNotifierProvider.value(

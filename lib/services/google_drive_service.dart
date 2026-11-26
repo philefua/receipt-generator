@@ -49,6 +49,45 @@ class ProductSheetResult {
       ProductSheetResult(success: false, message: message);
 }
 
+/// One backup file found in Google Drive.
+class DriveBackupFile {
+  final String id;
+  final String name;
+  final DateTime? createdTime;
+  final int? sizeBytes;
+
+  const DriveBackupFile({
+    required this.id,
+    required this.name,
+    this.createdTime,
+    this.sizeBytes,
+  });
+}
+
+class DriveBackupListResult {
+  final bool success;
+  final String message;
+  final List<DriveBackupFile> files;
+
+  const DriveBackupListResult({
+    required this.success,
+    required this.message,
+    this.files = const <DriveBackupFile>[],
+  });
+}
+
+class DriveDownloadResult {
+  final bool success;
+  final String message;
+  final List<int>? bytes;
+
+  const DriveDownloadResult({
+    required this.success,
+    required this.message,
+    this.bytes,
+  });
+}
+
 /// A minimal http.Client that attaches the signed-in Google account's
 /// OAuth access token to every outgoing request, bridging google_sign_in
 /// (which handles the actual sign-in UI/consent flow) to the googleapis
@@ -288,6 +327,139 @@ class GoogleDriveService {
       );
     } catch (e) {
       return ProductSheetResult.fail('Could not read product Sheet: $e');
+    }
+  }
+
+  // -------------------------------------------------------------------
+  // Full app backup file (Printiverse_backup_*.json)
+  // -------------------------------------------------------------------
+
+  static const String _backupMime = 'application/json';
+  static const String _backupPrefix = 'Printiverse_backup_';
+
+  /// Uploads the full backup file ([bytes] are the .json file) to Drive.
+  Future<DriveOperationResult> uploadBackupFile({
+    required List<int> bytes,
+    required String fileName,
+  }) async {
+    if (!isSignedIn) {
+      return DriveOperationResult.fail(
+        'Not signed in to Google. Connect a Google account first.',
+      );
+    }
+    try {
+      final client = await _getAuthenticatedClient();
+      if (client == null) {
+        return DriveOperationResult.fail(
+          'Could not authenticate with Google. Try signing in again.',
+        );
+      }
+      final driveApi = drive.DriveApi(client);
+      final driveFile = drive.File()
+        ..name = fileName
+        ..mimeType = _backupMime;
+      final media = drive.Media(
+        Stream.value(bytes),
+        bytes.length,
+        contentType: _backupMime,
+      );
+      await driveApi.files.create(driveFile, uploadMedia: media);
+      client.close();
+      return DriveOperationResult.ok('Backup uploaded to Google Drive.');
+    } catch (e) {
+      return DriveOperationResult.fail('Drive upload failed: $e');
+    }
+  }
+
+  /// Lists the full backup files this app has uploaded, newest first.
+  /// Under the drive.file scope only files created by this app are visible.
+  Future<DriveBackupListResult> listBackupFiles() async {
+    if (!isSignedIn) {
+      return const DriveBackupListResult(
+        success: false,
+        message: 'Not signed in to Google. Connect a Google account first.',
+      );
+    }
+    try {
+      final client = await _getAuthenticatedClient();
+      if (client == null) {
+        return const DriveBackupListResult(
+          success: false,
+          message: 'Could not authenticate with Google. Try signing in again.',
+        );
+      }
+      final driveApi = drive.DriveApi(client);
+      final result = await driveApi.files.list(
+        q: "mimeType = '$_backupMime' and trashed = false",
+        orderBy: 'createdTime desc',
+        pageSize: 50,
+        $fields: 'files(id,name,createdTime,size)',
+      );
+      client.close();
+
+      final files = <DriveBackupFile>[];
+      for (final f in result.files ?? <drive.File>[]) {
+        final id = f.id;
+        final name = f.name;
+        if (id == null || name == null || !name.startsWith(_backupPrefix)) {
+          continue;
+        }
+        files.add(DriveBackupFile(
+          id: id,
+          name: name,
+          createdTime: f.createdTime,
+          sizeBytes: int.tryParse(f.size ?? ''),
+        ));
+      }
+      return DriveBackupListResult(
+        success: true,
+        message: 'OK',
+        files: files,
+      );
+    } catch (e) {
+      return DriveBackupListResult(
+        success: false,
+        message: 'Could not list Drive backups: $e',
+      );
+    }
+  }
+
+  /// Downloads one file from Drive by id.
+  Future<DriveDownloadResult> downloadFile(String fileId) async {
+    if (!isSignedIn) {
+      return const DriveDownloadResult(
+        success: false,
+        message: 'Not signed in to Google. Connect a Google account first.',
+      );
+    }
+    try {
+      final client = await _getAuthenticatedClient();
+      if (client == null) {
+        return const DriveDownloadResult(
+          success: false,
+          message: 'Could not authenticate with Google. Try signing in again.',
+        );
+      }
+      final driveApi = drive.DriveApi(client);
+      final media = await driveApi.files.get(
+        fileId,
+        downloadOptions: drive.DownloadOptions.fullMedia,
+      ) as drive.Media;
+      final bytes = <int>[];
+      await for (final chunk in media.stream) {
+        bytes.addAll(chunk);
+      }
+      client.close();
+      return DriveDownloadResult(
+        success: true,
+        message: 'OK',
+        bytes: bytes,
+      );
+    } catch (e) {
+      return DriveDownloadResult(
+        success: false,
+        message: 'Could not download the backup: $e',
+      );
     }
   }
 }

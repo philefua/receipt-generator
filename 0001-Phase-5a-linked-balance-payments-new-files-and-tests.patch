@@ -1,0 +1,1876 @@
+From 1e301ee59e04592141d5d2ac58ba0472b5a34b95 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 23 Nov 2026 05:56:41 +0000
+Subject: [PATCH] Phase 5a: linked balance payments (new files and tests)
+
+Adds the balance-payment feature as new files only:
+- balance_math.dart: pure outstanding and validation logic
+- balance_repository.dart: lookup by exact receipt number, open balances,
+  and recording a payment as a new balance receipt (own daily serial,
+  -B suffix, original receipt never changed)
+- balance_receipt_view.dart / balance_receipt_printing.dart: the balance
+  receipt text, WhatsApp message and thermal print template
+- screens/balance_payment_page.dart, widgets/balance_payment_button.dart,
+  widgets/balance_receipt_preview.dart: the cashier Balance Payment page
+- tests, including a legacy-layout test proving receipts saved before this
+  change still read back as sales
+
+Nothing existing is modified in this commit. The edits to Receipt, the
+cashier screen, history page, print and WhatsApp services follow in
+apply_phase5.ps1 (phase 5b).
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ lib/features/finance/balance_math.dart        |  90 ++++
+ .../finance/balance_receipt_printing.dart     | 149 ++++++
+ .../finance/balance_receipt_view.dart         | 122 +++++
+ lib/features/finance/balance_repository.dart  | 272 +++++++++++
+ .../finance/screens/balance_payment_page.dart | 431 ++++++++++++++++++
+ .../widgets/balance_payment_button.dart       |  37 ++
+ .../widgets/balance_receipt_preview.dart      | 174 +++++++
+ test/finance_balance_test.dart                | 341 ++++++++++++++
+ test/receipt_legacy_compat_test.dart          | 160 +++++++
+ 9 files changed, 1776 insertions(+)
+ create mode 100644 lib/features/finance/balance_math.dart
+ create mode 100644 lib/features/finance/balance_receipt_printing.dart
+ create mode 100644 lib/features/finance/balance_receipt_view.dart
+ create mode 100644 lib/features/finance/balance_repository.dart
+ create mode 100644 lib/features/finance/screens/balance_payment_page.dart
+ create mode 100644 lib/features/finance/widgets/balance_payment_button.dart
+ create mode 100644 lib/features/finance/widgets/balance_receipt_preview.dart
+ create mode 100644 test/finance_balance_test.dart
+ create mode 100644 test/receipt_legacy_compat_test.dart
+
+diff --git a/lib/features/finance/balance_math.dart b/lib/features/finance/balance_math.dart
+new file mode 100644
+index 0000000..dafa0d6
+--- /dev/null
++++ b/lib/features/finance/balance_math.dart
+@@ -0,0 +1,90 @@
++/// Pure balance arithmetic for linked balance payments (handoff section 5).
++/// No Hive and no Flutter, so it is trivial to test. All sums use integer
++/// minor units (amount x 100) so totals never drift.
++///
++///   outstanding = original total - original deposit - sum(linked payments)
++///
++/// Outstanding is computed every time and never stored, and it is never
++/// negative.
++class SaleSummary {
++  final String code;
++  final int totalMinor;
++  final int depositMinor;
++
++  const SaleSummary({
++    required this.code,
++    required this.totalMinor,
++    required this.depositMinor,
++  });
++}
++
++class PaymentSummary {
++  /// Code of the original sale this payment was made against.
++  final String linkedCode;
++  final int amountMinor;
++
++  const PaymentSummary({required this.linkedCode, required this.amountMinor});
++}
++
++class BalanceMath {
++  BalanceMath._();
++
++  static int toMinor(double v) => (v * 100).round();
++
++  static double fromMinor(int minor) => minor / 100;
++
++  /// Never below zero, even if old data over-paid.
++  static int outstandingMinor({
++    required int totalMinor,
++    required int depositMinor,
++    required int paidLaterMinor,
++  }) {
++    final value = totalMinor - depositMinor - paidLaterMinor;
++    return value < 0 ? 0 : value;
++  }
++
++  /// Sum of balance payments per original sale code.
++  static Map<String, int> paidLaterByCode(Iterable<PaymentSummary> payments) {
++    final map = <String, int>{};
++    for (final p in payments) {
++      map[p.linkedCode] = (map[p.linkedCode] ?? 0) + p.amountMinor;
++    }
++    return map;
++  }
++
++  /// Outstanding balance for every sale. Payments that point at an unknown
++  /// code are ignored here (phase 6 surfaces them as unmatched).
++  static Map<String, int> outstandingBySale(
++    Iterable<SaleSummary> sales,
++    Iterable<PaymentSummary> payments,
++  ) {
++    final paid = paidLaterByCode(payments);
++    return {
++      for (final s in sales)
++        s.code: outstandingMinor(
++          totalMinor: s.totalMinor,
++          depositMinor: s.depositMinor,
++          paidLaterMinor: paid[s.code] ?? 0,
++        ),
++    };
++  }
++
++  /// Returns a plain-English problem with the payment, or null if it is fine.
++  static String? validatePayment({
++    required bool originalIsSale,
++    required int outstandingMinor,
++    required int amountMinor,
++  }) {
++    if (!originalIsSale) {
++      return 'That is a balance receipt. Enter the number of the original sale receipt.';
++    }
++    if (outstandingMinor <= 0) {
++      return 'This receipt has no balance left to pay.';
++    }
++    if (amountMinor <= 0) return 'Enter an amount above zero.';
++    if (amountMinor > outstandingMinor) {
++      return 'The amount cannot be more than the balance owed.';
++    }
++    return null;
++  }
++}
+diff --git a/lib/features/finance/balance_receipt_printing.dart b/lib/features/finance/balance_receipt_printing.dart
+new file mode 100644
+index 0000000..f2f227f
+--- /dev/null
++++ b/lib/features/finance/balance_receipt_printing.dart
+@@ -0,0 +1,149 @@
++import 'package:esc_pos_utils_plus/esc_pos_utils_plus.dart';
++
++import '../../models/business_settings.dart';
++import '../../models/receipt.dart';
++import 'balance_receipt_view.dart';
++
++const int _paperWidthChars = 32;
++
++String _totalsRow(String label, String value) {
++  final spaceCount = _paperWidthChars - label.length - value.length;
++  final spacer = spaceCount > 0 ? ' ' * spaceCount : ' ';
++  return '$label$spacer$value';
++}
++
++String _formatDateTime(DateTime dt) {
++  final y = dt.year.toString().padLeft(4, '0');
++  final m = dt.month.toString().padLeft(2, '0');
++  final d = dt.day.toString().padLeft(2, '0');
++  final h = dt.hour.toString().padLeft(2, '0');
++  final min = dt.minute.toString().padLeft(2, '0');
++  return '$y-$m-$d $h:$min';
++}
++
++/// ESC/POS bytes for a balance receipt on a 58mm printer. Same header and
++/// footer as the sale receipt; the body shows BALANCE PAYMENT, the original
++/// receipt number, previous balance, amount paid now and remaining balance.
++/// The sale receipt template is not touched.
++Future<List<int>> buildBalanceReceiptBytes({
++  required Receipt receipt,
++  required BusinessSettings business,
++}) async {
++  final view = BalanceReceiptView.fromReceipt(
++    receipt,
++    businessName: business.businessName,
++    currency: business.currencySymbol,
++    footnote: business.footnote,
++  );
++
++  final profile = await CapabilityProfile.load();
++  final generator = Generator(PaperSize.mm58, profile);
++  final List<int> bytes = <int>[];
++
++  bytes.addAll(generator.text(
++    business.businessName,
++    styles: const PosStyles(
++      align: PosAlign.center,
++      bold: true,
++      height: PosTextSize.size2,
++      width: PosTextSize.size2,
++    ),
++  ));
++
++  if (business.address.isNotEmpty) {
++    bytes.addAll(generator.text(
++      business.address,
++      styles: const PosStyles(align: PosAlign.center),
++    ));
++  }
++
++  final contactLine = [
++    if (business.phone.isNotEmpty) business.phone,
++    if (business.whatsapp.isNotEmpty) 'WA: ${business.whatsapp}',
++  ].join(' | ');
++  if (contactLine.isNotEmpty) {
++    bytes.addAll(generator.text(
++      contactLine,
++      styles: const PosStyles(align: PosAlign.center, fontType: PosFontType.fontB),
++    ));
++  }
++
++  bytes.addAll(generator.hr(ch: '-'));
++
++  bytes.addAll(generator.text(
++    'BALANCE PAYMENT',
++    styles: const PosStyles(
++      align: PosAlign.center,
++      bold: true,
++      height: PosTextSize.size2,
++    ),
++  ));
++
++  bytes.addAll(generator.hr(ch: '-'));
++
++  bytes.addAll(generator.text(
++    'Date: ${_formatDateTime(view.issuedAt)}',
++    styles: const PosStyles(align: PosAlign.left),
++  ));
++  bytes.addAll(generator.text(
++    'Code: ${view.code}',
++    styles: const PosStyles(align: PosAlign.left, bold: true),
++  ));
++  bytes.addAll(generator.text(
++    'Original Receipt: ${view.originalCode}',
++    styles: const PosStyles(align: PosAlign.left, bold: true),
++  ));
++  bytes.addAll(generator.text(
++    'Cashier: ${view.cashierName}',
++    styles: const PosStyles(align: PosAlign.left),
++  ));
++  if (view.customerName.isNotEmpty) {
++    bytes.addAll(generator.text(
++      'Customer: ${view.customerName}',
++      styles: const PosStyles(align: PosAlign.left),
++    ));
++  }
++
++  bytes.addAll(generator.hr(ch: '-'));
++
++  bytes.addAll(generator.text(
++    _totalsRow('Previous Balance', view.money(view.previousMinor)),
++  ));
++  bytes.addAll(generator.text(
++    _totalsRow('PAID NOW', view.money(view.paidMinor)),
++    styles: const PosStyles(
++      bold: true,
++      height: PosTextSize.size2,
++      width: PosTextSize.size1,
++    ),
++  ));
++  bytes.addAll(generator.hr(ch: '='));
++  bytes.addAll(generator.text(
++    _totalsRow('REMAINING', view.money(view.remainingMinor)),
++    styles: const PosStyles(bold: true),
++  ));
++  if (view.settled) {
++    bytes.addAll(generator.text(
++      'Fully paid',
++      styles: const PosStyles(align: PosAlign.center, bold: true),
++    ));
++  }
++
++  bytes.addAll(generator.text(
++    'Payment: ${view.paymentMethod}',
++    styles: const PosStyles(align: PosAlign.left, bold: true),
++  ));
++
++  if (business.footnote.isNotEmpty) {
++    bytes.addAll(generator.hr(ch: '-'));
++    bytes.addAll(generator.text(
++      business.footnote,
++      styles: const PosStyles(align: PosAlign.center),
++    ));
++  }
++
++  bytes.addAll(generator.feed(2));
++  bytes.addAll(generator.cut());
++
++  return bytes;
++}
+diff --git a/lib/features/finance/balance_receipt_view.dart b/lib/features/finance/balance_receipt_view.dart
+new file mode 100644
+index 0000000..3220c88
+--- /dev/null
++++ b/lib/features/finance/balance_receipt_view.dart
+@@ -0,0 +1,122 @@
++import '../../models/receipt.dart';
++import 'balance_math.dart';
++
++/// Everything a balance receipt shows, taken from the saved receipt itself so
++/// a reprint years later is identical. A balance receipt stores:
++///   totalPayable / depositPaid = amount paid now
++///   balanceOwed                = balance remaining after this payment
++///   linkedReceiptId            = the original sale's receipt number
++/// Previous balance is amount paid + remaining.
++///
++/// The print, preview and WhatsApp text all read this one class, so the three
++/// can never disagree.
++class BalanceReceiptView {
++  final String businessName;
++  final String currency;
++  final String footnote;
++  final String code;
++  final String originalCode;
++  final String customerName;
++  final String paymentMethod;
++  final String cashierName;
++  final DateTime issuedAt;
++  final int previousMinor;
++  final int paidMinor;
++  final int remainingMinor;
++
++  const BalanceReceiptView({
++    required this.businessName,
++    required this.currency,
++    required this.footnote,
++    required this.code,
++    required this.originalCode,
++    required this.customerName,
++    required this.paymentMethod,
++    required this.cashierName,
++    required this.issuedAt,
++    required this.previousMinor,
++    required this.paidMinor,
++    required this.remainingMinor,
++  });
++
++  factory BalanceReceiptView.fromReceipt(
++    Receipt receipt, {
++    required String businessName,
++    required String currency,
++    String footnote = '',
++  }) {
++    final paid = BalanceMath.toMinor(receipt.totalPayable);
++    final remaining = BalanceMath.toMinor(receipt.balanceOwed);
++    return BalanceReceiptView(
++      businessName: businessName,
++      currency: currency,
++      footnote: footnote.trim(),
++      code: receipt.receiptCode,
++      originalCode: receipt.linkedReceiptId ?? '',
++      customerName: receipt.customerName,
++      paymentMethod: receipt.paymentMethod,
++      cashierName: receipt.cashierName,
++      issuedAt: receipt.issuedAt,
++      previousMinor: paid + remaining,
++      paidMinor: paid,
++      remainingMinor: remaining,
++    );
++  }
++
++  bool get settled => remainingMinor == 0;
++
++  String money(int minor) => '$currency${BalanceMath.fromMinor(minor).toStringAsFixed(2)}';
++
++  /// Customer-facing WhatsApp text. Same tone as the sale receipt message.
++  String whatsappMessage() {
++    final b = StringBuffer();
++    b.writeln(businessName);
++    b.writeln();
++    b.writeln('BALANCE PAYMENT');
++    b.writeln('Receipt No: $code');
++    b.writeln('Original Receipt: $originalCode');
++    b.writeln();
++    b.writeln('Previous Balance: ${money(previousMinor)}');
++    b.writeln('Amount Paid Now: ${money(paidMinor)}');
++    b.writeln('Remaining Balance: ${money(remainingMinor)}');
++    if (settled) {
++      b.writeln();
++      b.writeln('Fully paid.');
++    }
++    b.writeln();
++    b.writeln('Thank you for your patronage!');
++    if (footnote.isNotEmpty) {
++      b.writeln();
++      b.writeln(footnote);
++    }
++    return b.toString();
++  }
++}
++
++/// Second line of a history entry. For an ordinary sale with nothing owed it
++/// is exactly the text the history page always showed.
++String historySubtitle({
++  required Receipt receipt,
++  required String dateText,
++  required String currency,
++  required Map<String, int> outstandingByCode,
++}) {
++  final customer =
++      receipt.customerName.isNotEmpty ? receipt.customerName : 'Walk-in customer';
++
++  if (receipt.receiptType == Receipt.typeBalancePayment) {
++    return 'Balance payment for ${receipt.linkedReceiptId ?? '?'} • $customer\n'
++        '$dateText • ${receipt.paymentMethod}';
++  }
++
++  var line2 = '$dateText • ${receipt.paymentMethod}';
++  // Only sales that were opened with a balance get a status.
++  if (BalanceMath.toMinor(receipt.totalPayable) >
++      BalanceMath.toMinor(receipt.depositPaid)) {
++    final outstanding = outstandingByCode[receipt.receiptCode] ?? 0;
++    line2 += outstanding > 0
++        ? ' • Balance $currency${BalanceMath.fromMinor(outstanding).toStringAsFixed(2)}'
++        : ' • Settled';
++  }
++  return '$customer\n$line2';
++}
+diff --git a/lib/features/finance/balance_repository.dart b/lib/features/finance/balance_repository.dart
+new file mode 100644
+index 0000000..1bded07
+--- /dev/null
++++ b/lib/features/finance/balance_repository.dart
+@@ -0,0 +1,272 @@
++import 'package:hive/hive.dart';
++
++import '../../models/receipt.dart';
++import '../../utils/discount_code_util.dart';
++import 'balance_math.dart';
++import 'finance_repository.dart';
++
++/// A sale that still has money owed on it.
++class OpenBalance {
++  final Receipt sale;
++  final int outstandingMinor;
++
++  const OpenBalance({required this.sale, required this.outstandingMinor});
++}
++
++/// What the cashier sees after typing or picking an original receipt number.
++class BalanceLookup {
++  final Receipt? original;
++  final int totalMinor;
++  final int depositMinor;
++  final int paidLaterMinor;
++  final int outstandingMinor;
++  final String? error;
++
++  const BalanceLookup._({
++    this.original,
++    this.totalMinor = 0,
++    this.depositMinor = 0,
++    this.paidLaterMinor = 0,
++    this.outstandingMinor = 0,
++    this.error,
++  });
++
++  factory BalanceLookup.failure(String message) =>
++      BalanceLookup._(error: message);
++
++  factory BalanceLookup.found({
++    required Receipt original,
++    required int totalMinor,
++    required int depositMinor,
++    required int paidLaterMinor,
++    required int outstandingMinor,
++  }) =>
++      BalanceLookup._(
++        original: original,
++        totalMinor: totalMinor,
++        depositMinor: depositMinor,
++        paidLaterMinor: paidLaterMinor,
++        outstandingMinor: outstandingMinor,
++      );
++
++  bool get found => original != null && error == null;
++
++  /// Deposit plus earlier balance payments.
++  int get alreadyPaidMinor => depositMinor + paidLaterMinor;
++}
++
++class BalanceSaveResult {
++  final Receipt? receipt;
++  final String? error;
++
++  const BalanceSaveResult._({this.receipt, this.error});
++
++  factory BalanceSaveResult.success(Receipt receipt) =>
++      BalanceSaveResult._(receipt: receipt);
++
++  factory BalanceSaveResult.failure(String message) =>
++      BalanceSaveResult._(error: message);
++
++  bool get ok => receipt != null;
++}
++
++/// Finds sales that owe money and records balance payments as new receipts.
++///
++/// A balance payment is its own receipt (type balance_payment) linked to the
++/// original sale by receipt number. The original receipt is never changed,
++/// outstanding is computed from the receipts every time, and the sale
++/// receipt counter is not touched: balance receipts have their own daily
++/// serial, kept in the finance settings.
++class BalanceRepository {
++  BalanceRepository._();
++  static final BalanceRepository instance = BalanceRepository._();
++
++  /// The box the app already uses for receipts. Receipts are only ever added,
++  /// never edited or deleted.
++  static const String receiptsBoxName = 'receipts_box';
++
++  /// Appended to the sale-style code, e.g. ZKq01-B.
++  static const String codeSuffix = '-B';
++
++  Box<Receipt>? get _receipts {
++    try {
++      return Hive.isBoxOpen(receiptsBoxName)
++          ? Hive.box<Receipt>(receiptsBoxName)
++          : null;
++    } catch (_) {
++      return null;
++    }
++  }
++
++  /// True when balance payments can be looked up and saved on this device.
++  bool get isReady => _receipts != null && FinanceRepository.instance.isReady;
++
++  static Iterable<SaleSummary> _sales(Iterable<Receipt> all) => all
++      .where((r) => !r.isBalancePayment)
++      .map((r) => SaleSummary(
++            code: r.receiptCode,
++            totalMinor: BalanceMath.toMinor(r.totalPayable),
++            depositMinor: BalanceMath.toMinor(r.depositPaid),
++          ));
++
++  static Iterable<PaymentSummary> _payments(Iterable<Receipt> all) => all
++      .where((r) => r.isBalancePayment && r.linkedReceiptId != null)
++      .map((r) => PaymentSummary(
++            linkedCode: r.linkedReceiptId!,
++            amountMinor: BalanceMath.toMinor(r.totalPayable),
++          ));
++
++  /// Outstanding balance per sale code for the given receipts (the history
++  /// page passes the list it already has, so this is one pass).
++  static Map<String, int> outstandingByCode(Iterable<Receipt> all) =>
++      BalanceMath.outstandingBySale(_sales(all), _payments(all));
++
++  /// Looks up the original sale by its exact receipt number. Letters are
++  /// case-sensitive on purpose: the code format uses capital and small
++  /// letters to mean different dates.
++  BalanceLookup lookup(String rawCode) {
++    final box = _receipts;
++    if (box == null) {
++      return BalanceLookup.failure('Receipts are not available on this device.');
++    }
++    final code = rawCode.trim();
++    if (code.isEmpty) {
++      return BalanceLookup.failure('Enter the original receipt number.');
++    }
++
++    Receipt? original;
++    var paidLater = 0;
++    for (final r in box.values) {
++      if (r.receiptCode == code) original = r;
++      if (r.isBalancePayment && r.linkedReceiptId == code) {
++        paidLater += BalanceMath.toMinor(r.totalPayable);
++      }
++    }
++    if (original == null) {
++      return BalanceLookup.failure(
++          'No receipt found with the number $code. Check the letters '
++          '(capital and small letters matter) or pick it from the list.');
++    }
++    if (original.isBalancePayment) {
++      return BalanceLookup.failure(
++          '$code is a balance receipt. Enter the number of the original sale receipt.');
++    }
++
++    final total = BalanceMath.toMinor(original.totalPayable);
++    final deposit = BalanceMath.toMinor(original.depositPaid);
++    return BalanceLookup.found(
++      original: original,
++      totalMinor: total,
++      depositMinor: deposit,
++      paidLaterMinor: paidLater,
++      outstandingMinor: BalanceMath.outstandingMinor(
++        totalMinor: total,
++        depositMinor: deposit,
++        paidLaterMinor: paidLater,
++      ),
++    );
++  }
++
++  /// Sales that still owe money, newest first.
++  List<OpenBalance> openBalances() {
++    final box = _receipts;
++    if (box == null) return const [];
++    final all = box.values.toList();
++    final outstanding = outstandingByCode(all);
++    final list = <OpenBalance>[
++      for (final r in all)
++        if (!r.isBalancePayment && (outstanding[r.receiptCode] ?? 0) > 0)
++          OpenBalance(sale: r, outstandingMinor: outstanding[r.receiptCode]!),
++    ]..sort((a, b) => b.sale.issuedAt.compareTo(a.sale.issuedAt));
++    return list;
++  }
++
++  static int _dayKey(DateTime d) => d.year * 10000 + d.month * 100 + d.day;
++
++  /// Records a balance payment against [originalCode] as a new receipt.
++  /// Returns the saved receipt, or a plain-English reason it was refused.
++  Future<BalanceSaveResult> recordPayment({
++    required String originalCode,
++    required double amount,
++    required String paymentMethod,
++    String cashierName = 'Front Desk',
++    DateTime? now,
++  }) async {
++    final box = _receipts;
++    if (box == null || !FinanceRepository.instance.isReady) {
++      return BalanceSaveResult.failure(
++          'Balance payments are not available on this device.');
++    }
++    if (amount.isNaN || amount.isInfinite) {
++      return BalanceSaveResult.failure('Enter a valid amount.');
++    }
++    final method = paymentMethod.trim();
++    if (method.isEmpty) {
++      return BalanceSaveResult.failure('Choose how it was paid.');
++    }
++
++    final look = lookup(originalCode);
++    if (!look.found) {
++      return BalanceSaveResult.failure(look.error ?? 'Receipt not found.');
++    }
++    final original = look.original!;
++
++    final amountMinor = BalanceMath.toMinor(amount);
++    final problem = BalanceMath.validatePayment(
++      originalIsSale: !original.isBalancePayment,
++      outstandingMinor: look.outstandingMinor,
++      amountMinor: amountMinor,
++    );
++    if (problem != null) return BalanceSaveResult.failure(problem);
++
++    // Own daily serial, 1 to 99, never shared with the sale counter.
++    final clock = now ?? DateTime.now();
++    final settings = FinanceRepository.instance.settings;
++    final today = _dayKey(clock);
++    var serial =
++        settings.balanceReceiptCounterDate == today ? settings.balanceReceiptCounter : 0;
++    serial += 1;
++    if (serial > 99) {
++      return BalanceSaveResult.failure(
++          'The limit of 99 balance receipts for one day has been reached.');
++    }
++
++    final code = DiscountCodeUtil.generateReceiptCode(
++          date: clock,
++          dailyOrderNumber: serial,
++        ) +
++        codeSuffix;
++    if (box.values.any((r) => r.receiptCode == code)) {
++      return BalanceSaveResult.failure(
++          'Receipt number $code is already in use. Please try again.');
++    }
++
++    // Save the counter first: a skipped number is harmless, a repeated one is not.
++    settings.balanceReceiptCounterDate = today;
++    settings.balanceReceiptCounter = serial;
++    await FinanceRepository.instance.saveSettings(settings);
++
++    final remaining = look.outstandingMinor - amountMinor;
++    final receipt = Receipt(
++      receiptCode: code,
++      issuedAt: clock,
++      items: const [],
++      subtotal: BalanceMath.fromMinor(amountMinor),
++      discountPercent: 0,
++      discountAmount: 0,
++      totalPayable: BalanceMath.fromMinor(amountMinor),
++      cashierName: cashierName,
++      isLocked: true,
++      customerName: original.customerName,
++      customerWhatsapp: original.customerWhatsapp,
++      paymentMethod: method,
++      couponReference: '',
++      depositPaid: BalanceMath.fromMinor(amountMinor),
++      balanceOwed: BalanceMath.fromMinor(remaining),
++      receiptType: Receipt.typeBalancePayment,
++      linkedReceiptId: original.receiptCode,
++    );
++    await box.add(receipt);
++    return BalanceSaveResult.success(receipt);
++  }
++}
+diff --git a/lib/features/finance/screens/balance_payment_page.dart b/lib/features/finance/screens/balance_payment_page.dart
+new file mode 100644
+index 0000000..4f0180f
+--- /dev/null
++++ b/lib/features/finance/screens/balance_payment_page.dart
+@@ -0,0 +1,431 @@
++import 'package:flutter/material.dart';
++import 'package:intl/intl.dart';
++import 'package:provider/provider.dart';
++
++import '../../../models/receipt.dart';
++import '../../../services/thermal_printer_service.dart';
++import '../../../services/whatsapp_share_service.dart';
++import '../../../state/app_state_controller.dart';
++import '../balance_math.dart';
++import '../balance_repository.dart';
++import '../widgets/balance_receipt_preview.dart';
++
++/// Cashier screen for a customer paying off what they owe. Completely separate
++/// from the sale flow: it never touches the cart, the sale counter or the
++/// original receipt. It finds the original sale, shows what is outstanding,
++/// and saves the payment as a new balance receipt.
++class BalancePaymentPage extends StatefulWidget {
++  const BalancePaymentPage({super.key});
++
++  @override
++  State<BalancePaymentPage> createState() => _BalancePaymentPageState();
++}
++
++class _BalancePaymentPageState extends State<BalancePaymentPage> {
++  final _repo = BalanceRepository.instance;
++  final _codeController = TextEditingController();
++  final _amountController = TextEditingController();
++
++  BalanceLookup? _lookup;
++  String _paymentMethod = 'Cash';
++  int _resetKey = 0;
++  bool _saving = false;
++
++  @override
++  void initState() {
++    super.initState();
++    _amountController.addListener(() => setState(() {}));
++  }
++
++  @override
++  void dispose() {
++    _codeController.dispose();
++    _amountController.dispose();
++    super.dispose();
++  }
++
++  double? get _amount {
++    final t = _amountController.text.replaceAll(',', '').trim();
++    return t.isEmpty ? null : double.tryParse(t);
++  }
++
++  void _find() {
++    setState(() {
++      _lookup = _repo.lookup(_codeController.text);
++      _amountController.clear();
++    });
++  }
++
++  Future<void> _pickOpenBalance(String currency) async {
++    final open = _repo.openBalances();
++    if (open.isEmpty) {
++      ScaffoldMessenger.of(context).showSnackBar(
++        const SnackBar(content: Text('No customers owe a balance right now.')),
++      );
++      return;
++    }
++    final dateFormat = DateFormat('d MMM yyyy');
++    final code = await showModalBottomSheet<String>(
++      context: context,
++      isScrollControlled: true,
++      builder: (ctx) => SafeArea(
++        child: ConstrainedBox(
++          constraints:
++              BoxConstraints(maxHeight: MediaQuery.of(ctx).size.height * 0.7),
++          child: ListView(
++            shrinkWrap: true,
++            children: [
++              const Padding(
++                padding: EdgeInsets.all(16),
++                child: Text(
++                  'Customers who still owe',
++                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
++                ),
++              ),
++              for (final o in open)
++                ListTile(
++                  title: Text(o.sale.customerName.isNotEmpty
++                      ? o.sale.customerName
++                      : 'Walk-in customer'),
++                  subtitle: Text(
++                      '${o.sale.receiptCode} • ${dateFormat.format(o.sale.issuedAt)}'),
++                  trailing: Text(
++                    '$currency${BalanceMath.fromMinor(o.outstandingMinor).toStringAsFixed(2)}',
++                    style: const TextStyle(fontWeight: FontWeight.bold),
++                  ),
++                  onTap: () => Navigator.of(ctx).pop(o.sale.receiptCode),
++                ),
++            ],
++          ),
++        ),
++      ),
++    );
++    if (code != null && mounted) {
++      _codeController.text = code;
++      _find();
++    }
++  }
++
++  Future<void> _save() async {
++    final look = _lookup;
++    final amount = _amount;
++    if (_saving || look == null || !look.found || amount == null) return;
++
++    final controller = context.read<AppStateController>();
++    final messenger = ScaffoldMessenger.of(context);
++    setState(() => _saving = true);
++
++    BalanceSaveResult result;
++    try {
++      result = await _repo.recordPayment(
++        originalCode: look.original!.receiptCode,
++        amount: amount,
++        paymentMethod: _paymentMethod,
++      );
++    } catch (_) {
++      result = BalanceSaveResult.failure(
++          'Could not save the payment. Please try again.');
++    }
++    if (!mounted) return;
++    setState(() => _saving = false);
++
++    final receipt = result.receipt;
++    if (receipt == null) {
++      messenger.showSnackBar(
++        SnackBar(content: Text(result.error ?? 'Could not save the payment.')),
++      );
++      return;
++    }
++
++    controller.notifyReceiptsChanged();
++    setState(() {
++      _lookup = null;
++      _codeController.clear();
++      _amountController.clear();
++      _paymentMethod = 'Cash';
++      _resetKey++;
++    });
++
++    await showDialog<void>(
++      context: context,
++      builder: (_) => BalanceReceiptResultDialog(receipt: receipt),
++    );
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    final currency = context.read<AppStateController>().settings.currencySymbol;
++    String money(int minor) =>
++        '$currency${BalanceMath.fromMinor(minor).toStringAsFixed(2)}';
++
++    final look = _lookup;
++    final amount = _amount;
++    final amountMinor = amount == null ? 0 : BalanceMath.toMinor(amount);
++    final tooMuch = look != null && look.found && amountMinor > look.outstandingMinor;
++    final canSave = look != null &&
++        look.found &&
++        look.outstandingMinor > 0 &&
++        amountMinor > 0 &&
++        !tooMuch &&
++        !_saving;
++
++    return Scaffold(
++      appBar: AppBar(title: const Text('Balance Payment')),
++      body: Center(
++        child: ConstrainedBox(
++          constraints: const BoxConstraints(maxWidth: 640),
++          child: ListView(
++            padding: const EdgeInsets.all(16),
++            children: [
++              const Text(
++                'Use this when a customer comes back to pay what they owe. '
++                'It makes a separate balance receipt. The original receipt '
++                'is not changed.',
++              ),
++              const SizedBox(height: 16),
++              TextField(
++                controller: _codeController,
++                autocorrect: false,
++                enableSuggestions: false,
++                decoration: InputDecoration(
++                  labelText: 'Original receipt number',
++                  hintText: 'e.g. ZKq05',
++                  border: const OutlineInputBorder(),
++                  suffixIcon: IconButton(
++                    tooltip: 'Find',
++                    icon: const Icon(Icons.search),
++                    onPressed: _find,
++                  ),
++                ),
++                onSubmitted: (_) => _find(),
++              ),
++              const SizedBox(height: 8),
++              Align(
++                alignment: Alignment.centerLeft,
++                child: TextButton.icon(
++                  onPressed: () => _pickOpenBalance(currency),
++                  icon: const Icon(Icons.list_alt_outlined),
++                  label: const Text('Pick from customers who owe'),
++                ),
++              ),
++              if (look != null && !look.found) ...[
++                const SizedBox(height: 8),
++                Text(
++                  look.error ?? 'Receipt not found.',
++                  style: TextStyle(color: Theme.of(context).colorScheme.error),
++                ),
++              ],
++              if (look != null && look.found) ...[
++                const SizedBox(height: 12),
++                Card(
++                  child: Padding(
++                    padding: const EdgeInsets.all(16),
++                    child: Column(
++                      crossAxisAlignment: CrossAxisAlignment.stretch,
++                      children: [
++                        Text(
++                          look.original!.customerName.isNotEmpty
++                              ? look.original!.customerName
++                              : 'Walk-in customer',
++                          style: const TextStyle(
++                              fontSize: 16, fontWeight: FontWeight.bold),
++                        ),
++                        const SizedBox(height: 8),
++                        _row('Original total', money(look.totalMinor)),
++                        _row('Already paid', money(look.alreadyPaidMinor)),
++                        const Divider(),
++                        _row('Balance owed', money(look.outstandingMinor),
++                            bold: true),
++                        if (look.outstandingMinor == 0)
++                          const Padding(
++                            padding: EdgeInsets.only(top: 8),
++                            child: Text('This receipt is fully paid.'),
++                          ),
++                      ],
++                    ),
++                  ),
++                ),
++              ],
++              if (look != null && look.found && look.outstandingMinor > 0) ...[
++                const SizedBox(height: 12),
++                TextField(
++                  controller: _amountController,
++                  keyboardType:
++                      const TextInputType.numberWithOptions(decimal: true),
++                  decoration: InputDecoration(
++                    labelText: 'Amount paid now',
++                    prefixText: '$currency ',
++                    border: const OutlineInputBorder(),
++                    errorText: tooMuch
++                        ? 'More than the balance owed (${money(look.outstandingMinor)})'
++                        : null,
++                  ),
++                ),
++                const SizedBox(height: 8),
++                Align(
++                  alignment: Alignment.centerLeft,
++                  child: TextButton(
++                    onPressed: () => _amountController.text =
++                        BalanceMath.fromMinor(look.outstandingMinor)
++                            .toStringAsFixed(2),
++                    child: const Text('Pay the full balance'),
++                  ),
++                ),
++                const SizedBox(height: 8),
++                DropdownButtonFormField<String>(
++                  key: ValueKey('method_$_resetKey'),
++                  initialValue: _paymentMethod,
++                  decoration: const InputDecoration(
++                    labelText: 'Payment Method',
++                    border: OutlineInputBorder(),
++                  ),
++                  items: const [
++                    DropdownMenuItem(value: 'Cash', child: Text('Cash')),
++                    DropdownMenuItem(value: 'Transfer', child: Text('Transfer')),
++                    DropdownMenuItem(value: 'POS', child: Text('POS')),
++                  ],
++                  onChanged: (v) {
++                    if (v != null) setState(() => _paymentMethod = v);
++                  },
++                ),
++                const SizedBox(height: 16),
++                FilledButton.icon(
++                  onPressed: canSave ? _save : null,
++                  icon: _saving
++                      ? const SizedBox(
++                          width: 18,
++                          height: 18,
++                          child: CircularProgressIndicator(strokeWidth: 2),
++                        )
++                      : const Icon(Icons.receipt_long_outlined),
++                  label: const Padding(
++                    padding: EdgeInsets.symmetric(vertical: 10),
++                    child: Text('Record Balance Payment'),
++                  ),
++                ),
++              ],
++            ],
++          ),
++        ),
++      ),
++    );
++  }
++
++  Widget _row(String label, String value, {bool bold = false}) {
++    final style = TextStyle(
++      fontWeight: bold ? FontWeight.bold : FontWeight.normal,
++      fontSize: bold ? 17 : 15,
++    );
++    return Padding(
++      padding: const EdgeInsets.symmetric(vertical: 3),
++      child: Row(
++        mainAxisAlignment: MainAxisAlignment.spaceBetween,
++        children: [
++          Text(label, style: style),
++          Text(value, style: style),
++        ],
++      ),
++    );
++  }
++}
++
++/// Shown after a balance payment is saved: preview, print and WhatsApp share.
++/// The print and share services pick the balance template on their own.
++class BalanceReceiptResultDialog extends StatefulWidget {
++  final Receipt receipt;
++
++  const BalanceReceiptResultDialog({super.key, required this.receipt});
++
++  @override
++  State<BalanceReceiptResultDialog> createState() =>
++      _BalanceReceiptResultDialogState();
++}
++
++class _BalanceReceiptResultDialogState
++    extends State<BalanceReceiptResultDialog> {
++  bool _isPrinting = false;
++  bool _isSharing = false;
++
++  void _toast(bool success, String message) {
++    ScaffoldMessenger.of(context).showSnackBar(
++      SnackBar(
++        content: Text(message),
++        backgroundColor: success ? Colors.green.shade700 : Colors.red.shade700,
++      ),
++    );
++  }
++
++  Future<void> _handlePrint(AppStateController controller) async {
++    setState(() => _isPrinting = true);
++    final result = await ThermalPrinterService.instance.printReceipt(
++      receipt: widget.receipt,
++      business: controller.settings,
++    );
++    if (!mounted) return;
++    setState(() => _isPrinting = false);
++    _toast(result.success, result.message);
++  }
++
++  Future<void> _handleShare(AppStateController controller) async {
++    setState(() => _isSharing = true);
++    try {
++      final result =
++          await WhatsappShareService.instance.shareReceiptDetailsToCustomer(
++        receipt: widget.receipt,
++        business: controller.settings,
++      );
++      if (!mounted) return;
++      _toast(result.success, result.message);
++    } catch (e) {
++      if (!mounted) return;
++      _toast(false, 'Failed to share receipt: $e');
++    } finally {
++      if (mounted) setState(() => _isSharing = false);
++    }
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    final controller = context.watch<AppStateController>();
++    return AlertDialog(
++      title: const Text('Balance Payment Recorded'),
++      content: SizedBox(
++        width: 380,
++        child: SingleChildScrollView(
++          child: BalanceReceiptPreview(
++            receipt: widget.receipt,
++            business: controller.settings,
++          ),
++        ),
++      ),
++      actions: [
++        TextButton.icon(
++          onPressed: _isPrinting ? null : () => _handlePrint(controller),
++          icon: _isPrinting
++              ? const SizedBox(
++                  width: 16,
++                  height: 16,
++                  child: CircularProgressIndicator(strokeWidth: 2),
++                )
++              : const Icon(Icons.print_outlined),
++          label: Text(_isPrinting ? 'Printing...' : 'Print'),
++        ),
++        TextButton.icon(
++          onPressed: _isSharing ? null : () => _handleShare(controller),
++          icon: _isSharing
++              ? const SizedBox(
++                  width: 16,
++                  height: 16,
++                  child: CircularProgressIndicator(strokeWidth: 2),
++                )
++              : const Icon(Icons.share_outlined),
++          label: Text(_isSharing ? 'Sharing...' : 'Share'),
++        ),
++        ElevatedButton(
++          onPressed: () => Navigator.of(context).pop(),
++          child: const Text('Done'),
++        ),
++      ],
++    );
++  }
++}
+diff --git a/lib/features/finance/widgets/balance_payment_button.dart b/lib/features/finance/widgets/balance_payment_button.dart
+new file mode 100644
+index 0000000..fb8d224
+--- /dev/null
++++ b/lib/features/finance/widgets/balance_payment_button.dart
+@@ -0,0 +1,37 @@
++import 'package:flutter/material.dart';
++
++import '../balance_repository.dart';
++import '../screens/balance_payment_page.dart';
++
++/// The cashier's entry point for balance payments. It sits on the cashier
++/// screen but opens its own page, so the normal sale flow is never touched.
++/// Hidden when finance data is unavailable on this device.
++class BalancePaymentButton extends StatelessWidget {
++  const BalancePaymentButton({super.key});
++
++  @override
++  Widget build(BuildContext context) {
++    if (!BalanceRepository.instance.isReady) return const SizedBox.shrink();
++    return SizedBox(
++      width: double.infinity,
++      child: OutlinedButton.icon(
++        onPressed: () {
++          try {
++            Navigator.of(context).push(
++              MaterialPageRoute(builder: (_) => const BalancePaymentPage()),
++            );
++          } catch (_) {
++            ScaffoldMessenger.of(context).showSnackBar(
++              const SnackBar(content: Text('Could not open Balance Payment.')),
++            );
++          }
++        },
++        icon: const Icon(Icons.account_balance_wallet_outlined),
++        label: const Padding(
++          padding: EdgeInsets.symmetric(vertical: 10),
++          child: Text('Balance Payment (customer paying what they owe)'),
++        ),
++      ),
++    );
++  }
++}
+diff --git a/lib/features/finance/widgets/balance_receipt_preview.dart b/lib/features/finance/widgets/balance_receipt_preview.dart
+new file mode 100644
+index 0000000..3f7b661
+--- /dev/null
++++ b/lib/features/finance/widgets/balance_receipt_preview.dart
+@@ -0,0 +1,174 @@
++import 'package:flutter/material.dart';
++import 'package:intl/intl.dart';
++
++import '../../../models/business_settings.dart';
++import '../../../models/receipt.dart';
++import '../balance_receipt_view.dart';
++
++/// On-screen preview of a balance receipt, styled to match the sale receipt
++/// preview (same width, fonts, colours and labels). A balance receipt has no
++/// item lines, so the sale preview widget is not used for these.
++class BalanceReceiptPreview extends StatelessWidget {
++  final Receipt receipt;
++  final BusinessSettings business;
++
++  const BalanceReceiptPreview({
++    super.key,
++    required this.receipt,
++    required this.business,
++  });
++
++  @override
++  Widget build(BuildContext context) {
++    final view = BalanceReceiptView.fromReceipt(
++      receipt,
++      businessName: business.businessName,
++      currency: business.currencySymbol,
++      footnote: business.footnote,
++    );
++    final dateFormat = DateFormat('yyyy-MM-dd  HH:mm');
++
++    return Container(
++      width: 360,
++      padding: const EdgeInsets.all(16),
++      color: Colors.white,
++      child: Column(
++        crossAxisAlignment: CrossAxisAlignment.stretch,
++        children: [
++          Text(
++            business.businessName,
++            textAlign: TextAlign.center,
++            style: const TextStyle(
++              fontSize: 20,
++              fontWeight: FontWeight.bold,
++              color: Colors.black,
++            ),
++          ),
++          if (business.address.isNotEmpty) ...[
++            const SizedBox(height: 4),
++            Text(
++              business.address,
++              textAlign: TextAlign.center,
++              style: const TextStyle(fontSize: 12, color: Colors.black87),
++            ),
++          ],
++          const SizedBox(height: 10),
++          const Divider(color: Colors.black26),
++          const Text(
++            'BALANCE PAYMENT',
++            textAlign: TextAlign.center,
++            style: TextStyle(
++              fontSize: 16,
++              fontWeight: FontWeight.bold,
++              color: Colors.black,
++            ),
++          ),
++          const Divider(color: Colors.black26),
++          Text(
++            'Date: ${dateFormat.format(view.issuedAt)}',
++            style: const TextStyle(fontSize: 12, color: Colors.black87),
++          ),
++          Text(
++            'Receipt Code: ${view.code}',
++            style: const TextStyle(
++              fontSize: 12,
++              fontWeight: FontWeight.bold,
++              color: Colors.black,
++            ),
++          ),
++          Text(
++            'Original Receipt: ${view.originalCode}',
++            style: const TextStyle(
++              fontSize: 12,
++              fontWeight: FontWeight.bold,
++              color: Colors.black,
++            ),
++          ),
++          Text(
++            'Cashier: ${view.cashierName}',
++            style: const TextStyle(fontSize: 12, color: Colors.black87),
++          ),
++          if (view.customerName.isNotEmpty)
++            Text(
++              'Customer: ${view.customerName}',
++              style: const TextStyle(fontSize: 12, color: Colors.black87),
++            ),
++          if (receipt.customerWhatsapp.isNotEmpty)
++            Text(
++              'Customer WA: ${receipt.customerWhatsapp}',
++              style: const TextStyle(fontSize: 12, color: Colors.black87),
++            ),
++          const SizedBox(height: 8),
++          const Divider(color: Colors.black26),
++          _totalsLine('Previous Balance', view.money(view.previousMinor)),
++          _totalsLine('PAID NOW', view.money(view.paidMinor), bold: true),
++          const Divider(color: Colors.black45),
++          _totalsLine(
++            'REMAINING BALANCE',
++            view.money(view.remainingMinor),
++            bold: true,
++            highlight: !view.settled,
++          ),
++          if (view.settled)
++            const Padding(
++              padding: EdgeInsets.only(top: 4),
++              child: Text(
++                'Fully paid',
++                textAlign: TextAlign.center,
++                style: TextStyle(
++                  fontSize: 12,
++                  fontWeight: FontWeight.bold,
++                  color: Colors.black,
++                ),
++              ),
++            ),
++          const SizedBox(height: 6),
++          Text(
++            'Payment: ${view.paymentMethod}',
++            style: const TextStyle(
++              fontSize: 12,
++              fontWeight: FontWeight.bold,
++              color: Colors.black,
++            ),
++          ),
++          if (view.footnote.isNotEmpty) ...[
++            const SizedBox(height: 10),
++            const Divider(color: Colors.black26),
++            Text(
++              view.footnote,
++              textAlign: TextAlign.center,
++              style: const TextStyle(
++                fontSize: 11,
++                fontStyle: FontStyle.italic,
++                color: Colors.black54,
++              ),
++            ),
++          ],
++        ],
++      ),
++    );
++  }
++
++  Widget _totalsLine(
++    String label,
++    String value, {
++    bool bold = false,
++    bool highlight = false,
++  }) {
++    final style = TextStyle(
++      fontSize: bold ? 14 : 12,
++      fontWeight: bold ? FontWeight.bold : FontWeight.normal,
++      color: highlight ? Colors.red.shade800 : Colors.black87,
++    );
++    return Padding(
++      padding: const EdgeInsets.symmetric(vertical: 2),
++      child: Row(
++        mainAxisAlignment: MainAxisAlignment.spaceBetween,
++        children: [
++          Text(label, style: style),
++          Text(value, style: style),
++        ],
++      ),
++    );
++  }
++}
+diff --git a/test/finance_balance_test.dart b/test/finance_balance_test.dart
+new file mode 100644
+index 0000000..74450a8
+--- /dev/null
++++ b/test/finance_balance_test.dart
+@@ -0,0 +1,341 @@
++import 'dart:io';
++
++import 'package:flutter_test/flutter_test.dart';
++import 'package:hive/hive.dart';
++import 'package:receipt_generator/features/finance/balance_math.dart';
++import 'package:receipt_generator/features/finance/balance_receipt_view.dart';
++import 'package:receipt_generator/features/finance/balance_repository.dart';
++import 'package:receipt_generator/features/finance/finance_boxes.dart';
++import 'package:receipt_generator/features/finance/finance_repository.dart';
++import 'package:receipt_generator/models/receipt.dart';
++
++void main() {
++  group('BalanceMath (pure)', () {
++    test('outstanding = total - deposit - later payments, never below zero', () {
++      expect(
++          BalanceMath.outstandingMinor(
++              totalMinor: 1000000, depositMinor: 400000, paidLaterMinor: 0),
++          600000);
++      expect(
++          BalanceMath.outstandingMinor(
++              totalMinor: 1000000, depositMinor: 400000, paidLaterMinor: 250000),
++          350000);
++      expect(
++          BalanceMath.outstandingMinor(
++              totalMinor: 1000000, depositMinor: 400000, paidLaterMinor: 700000),
++          0);
++    });
++
++    test('minor units do not drift', () {
++      expect(BalanceMath.toMinor(0.1) + BalanceMath.toMinor(0.2), 30);
++      expect(BalanceMath.toMinor(1234.57), 123457);
++      expect(BalanceMath.fromMinor(123457), 1234.57);
++    });
++
++    test('outstandingBySale sums payments per sale and ignores unknown codes', () {
++      final result = BalanceMath.outstandingBySale(
++        const [
++          SaleSummary(code: 'A', totalMinor: 1000, depositMinor: 300),
++          SaleSummary(code: 'B', totalMinor: 500, depositMinor: 500),
++        ],
++        const [
++          PaymentSummary(linkedCode: 'A', amountMinor: 200),
++          PaymentSummary(linkedCode: 'A', amountMinor: 100),
++          PaymentSummary(linkedCode: 'ZZ', amountMinor: 999),
++        ],
++      );
++      expect(result, {'A': 400, 'B': 0});
++    });
++
++    test('validatePayment rejects what the rules forbid', () {
++      String? v(bool sale, int owed, int amount) => BalanceMath.validatePayment(
++          originalIsSale: sale, outstandingMinor: owed, amountMinor: amount);
++      expect(v(true, 1000, 500), isNull);
++      expect(v(true, 1000, 1000), isNull);
++      expect(v(false, 1000, 500), isNotNull); // not a sale
++      expect(v(true, 0, 500), isNotNull); // nothing owed
++      expect(v(true, 1000, 0), isNotNull); // zero
++      expect(v(true, 1000, -5), isNotNull); // negative
++      expect(v(true, 1000, 1001), isNotNull); // more than owed
++    });
++  });
++
++  group('BalanceRepository', () {
++    late Directory dir;
++    final repo = BalanceRepository.instance;
++    final now = DateTime(2026, 11, 22, 10);
++
++    Future<Receipt> addSale({
++      String code = 'ZKq05',
++      double total = 10000,
++      double deposit = 4000,
++    }) async {
++      final r = Receipt(
++        receiptCode: code,
++        issuedAt: DateTime(2026, 11, 17, 10),
++        items: [
++          ReceiptItem(
++              productId: 'p',
++              name: 'Banner',
++              unitPrice: total,
++              quantity: 1,
++              lineTotal: total),
++        ],
++        subtotal: total,
++        discountPercent: 0,
++        discountAmount: 0,
++        totalPayable: total,
++        cashierName: 'Front Desk',
++        customerName: 'Ada',
++        customerWhatsapp: '+2348012345678',
++        depositPaid: deposit,
++        balanceOwed: total - deposit,
++      );
++      await Hive.box<Receipt>(BalanceRepository.receiptsBoxName).add(r);
++      return r;
++    }
++
++    Box<Receipt> receipts() => Hive.box<Receipt>(BalanceRepository.receiptsBoxName);
++
++    setUp(() async {
++      dir = Directory.systemTemp.createTempSync('balance_test_');
++      Hive.init(dir.path);
++      FinanceBoxes.registerAdapters();
++      if (!Hive.isAdapterRegistered(2)) Hive.registerAdapter(ReceiptItemAdapter());
++      if (!Hive.isAdapterRegistered(3)) Hive.registerAdapter(ReceiptAdapter());
++      await FinanceBoxes.openAll();
++      await Hive.openBox<Receipt>(BalanceRepository.receiptsBoxName);
++    });
++
++    tearDown(() async {
++      await Hive.close();
++      if (dir.existsSync()) dir.deleteSync(recursive: true);
++    });
++
++    test('lookup finds the sale and computes what is owed', () async {
++      await addSale();
++      final look = repo.lookup(' ZKq05 ');
++      expect(look.found, isTrue);
++      expect(look.totalMinor, 1000000);
++      expect(look.alreadyPaidMinor, 400000);
++      expect(look.outstandingMinor, 600000);
++    });
++
++    test('lookup refuses blank, unknown, wrong-case and balance-receipt codes', () async {
++      await addSale();
++      expect(repo.lookup('').found, isFalse);
++      expect(repo.lookup('NOPE').found, isFalse);
++      expect(repo.lookup('zkq05').found, isFalse); // case matters
++      final paid = await repo.recordPayment(
++          originalCode: 'ZKq05', amount: 100, paymentMethod: 'Cash', now: now);
++      expect(paid.ok, isTrue);
++      final onBalanceReceipt = repo.lookup(paid.receipt!.receiptCode);
++      expect(onBalanceReceipt.found, isFalse);
++      expect(onBalanceReceipt.error, contains('balance receipt'));
++    });
++
++    test('partial payments reduce the balance until settled, then stop', () async {
++      await addSale();
++
++      final p1 = await repo.recordPayment(
++          originalCode: 'ZKq05', amount: 2500, paymentMethod: 'Transfer', now: now);
++      expect(p1.ok, isTrue);
++      expect(p1.receipt!.totalPayable, 2500);
++      expect(p1.receipt!.balanceOwed, 3500); // remaining after this payment
++      expect(repo.lookup('ZKq05').outstandingMinor, 350000);
++
++      final p2 = await repo.recordPayment(
++          originalCode: 'ZKq05', amount: 3500, paymentMethod: 'Cash', now: now);
++      expect(p2.ok, isTrue);
++      expect(p2.receipt!.balanceOwed, 0);
++      expect(repo.lookup('ZKq05').outstandingMinor, 0);
++
++      final p3 = await repo.recordPayment(
++          originalCode: 'ZKq05', amount: 1, paymentMethod: 'Cash', now: now);
++      expect(p3.ok, isFalse);
++      expect(receipts().length, 3); // sale + 2 balance receipts, nothing else
++    });
++
++    test('over-payment, zero, negative and blank method are refused', () async {
++      await addSale();
++      Future<bool> ok(double a, [String m = 'Cash']) async => (await repo
++              .recordPayment(
++                  originalCode: 'ZKq05', amount: a, paymentMethod: m, now: now))
++          .ok;
++      expect(await ok(6000.01), isFalse);
++      expect(await ok(0), isFalse);
++      expect(await ok(-10), isFalse);
++      expect(await ok(double.nan), isFalse);
++      expect(await ok(100, '  '), isFalse);
++      expect((await repo.recordPayment(
++              originalCode: 'MISSING', amount: 100, paymentMethod: 'Cash', now: now))
++          .ok, isFalse);
++      expect(receipts().length, 1);
++      expect(repo.lookup('ZKq05').outstandingMinor, 600000);
++    });
++
++    test('the original receipt is never changed', () async {
++      await addSale();
++      await repo.recordPayment(
++          originalCode: 'ZKq05', amount: 2500, paymentMethod: 'Cash', now: now);
++      final stored = receipts().values.firstWhere((r) => r.receiptCode == 'ZKq05');
++      expect(stored.depositPaid, 4000);
++      expect(stored.balanceOwed, 6000);
++      expect(stored.totalPayable, 10000);
++      expect(stored.receiptType, 'sale');
++      expect(stored.items.length, 1);
++    });
++
++    test('the balance receipt copies the customer and links to the sale', () async {
++      await addSale();
++      final r = (await repo.recordPayment(
++              originalCode: 'ZKq05', amount: 2500, paymentMethod: 'POS', now: now))
++          .receipt!;
++      expect(r.isBalancePayment, isTrue);
++      expect(r.linkedReceiptId, 'ZKq05');
++      expect(r.customerName, 'Ada');
++      expect(r.customerWhatsapp, '+2348012345678');
++      expect(r.paymentMethod, 'POS');
++      expect(r.items, isEmpty);
++      expect(r.issuedAt, now);
++    });
++
++    test('balance receipt numbers: -B suffix, own daily serial, resets each day', () async {
++      await addSale();
++      final a = await repo.recordPayment(
++          originalCode: 'ZKq05', amount: 100, paymentMethod: 'Cash', now: now);
++      final b = await repo.recordPayment(
++          originalCode: 'ZKq05', amount: 100, paymentMethod: 'Cash', now: now);
++      final nextDay = await repo.recordPayment(
++          originalCode: 'ZKq05',
++          amount: 100,
++          paymentMethod: 'Cash',
++          now: DateTime(2026, 11, 23, 9));
++      expect(a.receipt!.receiptCode, 'ZKv01-B'); // 2026, November, 22nd, serial 01
++      expect(b.receipt!.receiptCode, 'ZKv02-B');
++      expect(nextDay.receipt!.receiptCode, 'ZKw01-B');
++      expect(FinanceRepository.instance.settings.balanceReceiptCounter, 1);
++      // Never collides with a sale code (sale codes have no suffix).
++      expect(receipts().values.map((r) => r.receiptCode).toSet().length, 4);
++    });
++
++    test('the 99 balance receipts a day limit is enforced and saves nothing', () async {
++      await addSale();
++      final s = FinanceRepository.instance.settings;
++      s.balanceReceiptCounterDate = 20261122;
++      s.balanceReceiptCounter = 99;
++      await FinanceRepository.instance.saveSettings(s);
++
++      final r = await repo.recordPayment(
++          originalCode: 'ZKq05', amount: 100, paymentMethod: 'Cash', now: now);
++      expect(r.ok, isFalse);
++      expect(receipts().length, 1);
++    });
++
++    test('openBalances lists only sales that still owe, newest first', () async {
++      await addSale(code: 'ZKq05', total: 10000, deposit: 4000);
++      await addSale(code: 'ZKr06', total: 5000, deposit: 5000); // paid in full
++      await addSale(code: 'ZKs07', total: 3000, deposit: 1000);
++      await repo.recordPayment(
++          originalCode: 'ZKs07', amount: 2000, paymentMethod: 'Cash', now: now);
++
++      final open = repo.openBalances();
++      expect(open.map((o) => o.sale.receiptCode), ['ZKq05']);
++      expect(open.single.outstandingMinor, 600000);
++    });
++
++    test('balance receipts survive close and reopen', () async {
++      await addSale();
++      await repo.recordPayment(
++          originalCode: 'ZKq05', amount: 2500, paymentMethod: 'Cash', now: now);
++      await Hive.box<Receipt>(BalanceRepository.receiptsBoxName).close();
++      await Hive.openBox<Receipt>(BalanceRepository.receiptsBoxName);
++      expect(repo.lookup('ZKq05').outstandingMinor, 350000);
++    });
++  });
++
++  group('balance receipt text', () {
++    Receipt balanceReceipt({double paid = 2500, double remaining = 3500}) => Receipt(
++          receiptCode: 'ZKv01-B',
++          issuedAt: DateTime(2026, 11, 22, 9, 5),
++          items: const [],
++          subtotal: paid,
++          discountPercent: 0,
++          discountAmount: 0,
++          totalPayable: paid,
++          cashierName: 'Front Desk',
++          customerName: 'Ada',
++          paymentMethod: 'Cash',
++          depositPaid: paid,
++          balanceOwed: remaining,
++          receiptType: Receipt.typeBalancePayment,
++          linkedReceiptId: 'ZKq05',
++        );
++
++    test('previous balance is amount paid plus remaining', () {
++      final v = BalanceReceiptView.fromReceipt(balanceReceipt(),
++          businessName: 'Printiverse', currency: 'N');
++      expect(v.previousMinor, 600000);
++      expect(v.paidMinor, 250000);
++      expect(v.remainingMinor, 350000);
++      expect(v.settled, isFalse);
++    });
++
++    test('WhatsApp message carries the required lines', () {
++      final msg = BalanceReceiptView.fromReceipt(balanceReceipt(),
++              businessName: 'Printiverse', currency: 'N', footnote: ' Thanks! ')
++          .whatsappMessage();
++      expect(msg, contains('Printiverse'));
++      expect(msg, contains('BALANCE PAYMENT'));
++      expect(msg, contains('Receipt No: ZKv01-B'));
++      expect(msg, contains('Original Receipt: ZKq05'));
++      expect(msg, contains('Previous Balance: N6000.00'));
++      expect(msg, contains('Amount Paid Now: N2500.00'));
++      expect(msg, contains('Remaining Balance: N3500.00'));
++      expect(msg, isNot(contains('Fully paid')));
++      expect(msg.trim().endsWith('Thanks!'), isTrue);
++    });
++
++    test('a settled balance says fully paid', () {
++      final msg = BalanceReceiptView.fromReceipt(
++              balanceReceipt(paid: 3500, remaining: 0),
++              businessName: 'P',
++              currency: 'N')
++          .whatsappMessage();
++      expect(msg, contains('Remaining Balance: N0.00'));
++      expect(msg, contains('Fully paid.'));
++    });
++
++    test('history subtitle: unchanged for normal sales, informative otherwise', () {
++      Receipt sale({required double total, required double deposit, String name = 'Ada'}) =>
++          Receipt(
++            receiptCode: 'ZKq05',
++            issuedAt: DateTime(2026, 11, 17),
++            items: const [],
++            subtotal: total,
++            discountPercent: 0,
++            discountAmount: 0,
++            totalPayable: total,
++            cashierName: 'Front Desk',
++            customerName: name,
++            depositPaid: deposit,
++            balanceOwed: total - deposit,
++          );
++      String sub(Receipt r, [Map<String, int> m = const {}]) => historySubtitle(
++          receipt: r, dateText: '2026-11-17  10:00', currency: 'N', outstandingByCode: m);
++
++      // Exactly the text the page always showed.
++      expect(sub(sale(total: 5000, deposit: 5000)), 'Ada\n2026-11-17  10:00 • Cash');
++      expect(sub(sale(total: 5000, deposit: 5000, name: '')),
++          'Walk-in customer\n2026-11-17  10:00 • Cash');
++      // Opened with a balance.
++      expect(sub(sale(total: 10000, deposit: 4000), {'ZKq05': 350000}),
++          'Ada\n2026-11-17  10:00 • Cash • Balance N3500.00');
++      expect(sub(sale(total: 10000, deposit: 4000), {'ZKq05': 0}),
++          'Ada\n2026-11-17  10:00 • Cash • Settled');
++      // A balance receipt.
++      expect(sub(balanceReceipt()),
++          'Balance payment for ZKq05 • Ada\n2026-11-17  10:00 • Cash');
++    });
++  });
++}
+diff --git a/test/receipt_legacy_compat_test.dart b/test/receipt_legacy_compat_test.dart
+new file mode 100644
+index 0000000..8e8b5ef
+--- /dev/null
++++ b/test/receipt_legacy_compat_test.dart
+@@ -0,0 +1,160 @@
++import 'dart:io';
++
++import 'package:flutter_test/flutter_test.dart';
++import 'package:hive/hive.dart';
++import 'package:receipt_generator/models/receipt.dart';
++
++/// A receipt exactly as it was stored BEFORE phase 5: 15 fields, 0 to 14.
++class _LegacyReceipt {
++  final String receiptCode;
++  final DateTime issuedAt;
++  final List<ReceiptItem> items;
++  final double total;
++  final String customerName;
++  final String customerWhatsapp;
++  final double deposit;
++  final double balance;
++
++  _LegacyReceipt({
++    required this.receiptCode,
++    required this.issuedAt,
++    required this.items,
++    required this.total,
++    required this.customerName,
++    required this.customerWhatsapp,
++    required this.deposit,
++    required this.balance,
++  });
++}
++
++/// The old ReceiptAdapter's write(), copied from the pre-phase-5 generated
++/// file. It writes 15 fields and knows nothing about fields 15 and 16.
++class _LegacyReceiptAdapter extends TypeAdapter<_LegacyReceipt> {
++  @override
++  final int typeId = 3;
++
++  @override
++  _LegacyReceipt read(BinaryReader reader) => throw UnimplementedError();
++
++  @override
++  void write(BinaryWriter writer, _LegacyReceipt obj) {
++    writer
++      ..writeByte(15)
++      ..writeByte(0)
++      ..write(obj.receiptCode)
++      ..writeByte(1)
++      ..write(obj.issuedAt)
++      ..writeByte(2)
++      ..write(obj.items)
++      ..writeByte(3)
++      ..write(obj.total)
++      ..writeByte(4)
++      ..write(0.0)
++      ..writeByte(5)
++      ..write(0.0)
++      ..writeByte(6)
++      ..write(obj.total)
++      ..writeByte(7)
++      ..write('Front Desk')
++      ..writeByte(8)
++      ..write(true)
++      ..writeByte(9)
++      ..write(obj.customerName)
++      ..writeByte(10)
++      ..write(obj.customerWhatsapp)
++      ..writeByte(11)
++      ..write('Cash')
++      ..writeByte(12)
++      ..write('')
++      ..writeByte(13)
++      ..write(obj.deposit)
++      ..writeByte(14)
++      ..write(obj.balance);
++  }
++}
++
++void main() {
++  late Directory dir;
++
++  setUp(() {
++    dir = Directory.systemTemp.createTempSync('receipt_legacy_');
++    Hive.init(dir.path);
++  });
++
++  tearDown(() async {
++    await Hive.close();
++    Hive.resetAdapters();
++    if (dir.existsSync()) dir.deleteSync(recursive: true);
++  });
++
++  test('receipts saved before phase 5 still open and read back as sales', () async {
++    // 1. Store a receipt using the OLD layout.
++    Hive.registerAdapter(ReceiptItemAdapter());
++    Hive.registerAdapter(_LegacyReceiptAdapter());
++    final legacyBox = await Hive.openBox('legacy_receipts');
++    await legacyBox.add(_LegacyReceipt(
++      receiptCode: 'ZKq05',
++      issuedAt: DateTime(2026, 11, 17, 10, 30),
++      items: const [
++        ReceiptItem(
++            productId: 'p1',
++            name: 'Banner',
++            unitPrice: 10000,
++            quantity: 1,
++            lineTotal: 10000),
++      ],
++      total: 10000,
++      customerName: 'Ada',
++      customerWhatsapp: '+2348012345678',
++      deposit: 4000,
++      balance: 6000,
++    ));
++    await legacyBox.close();
++
++    // 2. Open the same file with the NEW adapter.
++    Hive.resetAdapters();
++    Hive.registerAdapter(ReceiptItemAdapter());
++    Hive.registerAdapter(ReceiptAdapter());
++    final box = await Hive.openBox<Receipt>('legacy_receipts');
++
++    final r = box.values.single;
++    expect(r.receiptCode, 'ZKq05');
++    expect(r.totalPayable, 10000);
++    expect(r.depositPaid, 4000);
++    expect(r.balanceOwed, 6000);
++    expect(r.customerName, 'Ada');
++    expect(r.items.single.name, 'Banner');
++    // New fields get their defaults: an old receipt is a sale.
++    expect(r.receiptType, 'sale');
++    expect(r.linkedReceiptId, isNull);
++    expect(r.isBalancePayment, isFalse);
++  });
++
++  test('new receipts keep their type and link after close and reopen', () async {
++    Hive.registerAdapter(ReceiptItemAdapter());
++    Hive.registerAdapter(ReceiptAdapter());
++    var box = await Hive.openBox<Receipt>('new_receipts');
++    await box.add(Receipt(
++      receiptCode: 'ZKv01-B',
++      issuedAt: DateTime(2026, 11, 22, 9),
++      items: const [],
++      subtotal: 2500,
++      discountPercent: 0,
++      discountAmount: 0,
++      totalPayable: 2500,
++      cashierName: 'Front Desk',
++      depositPaid: 2500,
++      balanceOwed: 3500,
++      receiptType: Receipt.typeBalancePayment,
++      linkedReceiptId: 'ZKq05',
++    ));
++    await box.close();
++
++    box = await Hive.openBox<Receipt>('new_receipts');
++    final r = box.values.single;
++    expect(r.isBalancePayment, isTrue);
++    expect(r.linkedReceiptId, 'ZKq05');
++    expect(r.balanceOwed, 3500);
++    expect(r.items, isEmpty);
++  });
++}
+-- 
+2.43.0
+

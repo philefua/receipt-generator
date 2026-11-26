@@ -6,8 +6,20 @@ import 'package:flutter/foundation.dart';
 import 'package:hive/hive.dart';
 import 'package:path_provider/path_provider.dart';
 
+import '../../models/business_settings.dart';
+import '../../models/product_preset.dart';
+import '../../models/receipt.dart';
 import 'finance_boxes.dart';
 import 'finance_repository.dart';
+import 'models/asset.dart';
+import 'models/asset_category.dart';
+import 'models/expense.dart';
+import 'models/expense_category.dart';
+import 'models/finance_settings.dart';
+import 'models/loan.dart';
+import 'models/loan_transaction.dart';
+import 'models/receipt_link.dart';
+import 'models/stock_count.dart';
 import 'report_period.dart';
 
 /// A problem the manager should be told about in plain words.
@@ -209,16 +221,56 @@ class BackupService {
   // Backup
   // ---------------------------------------------------------------------
 
+  /// Hive only hands back an open box when asked for its exact type, so an
+  /// already-open box is found by trying each type the app uses. Returns
+  /// null when the box is not open (or is of a type not listed here).
+  static BoxBase<dynamic>? _liveBox(String name) {
+    if (!Hive.isBoxOpen(name)) return null;
+    final attempts = <BoxBase<dynamic> Function()>[
+      () => Hive.box<dynamic>(name),
+      () => Hive.box<BusinessSettings>(name),
+      () => Hive.box<ProductPreset>(name),
+      () => Hive.box<Receipt>(name),
+      () => Hive.box<FinanceSettings>(name),
+      () => Hive.box<ExpenseCategory>(name),
+      () => Hive.box<AssetCategory>(name),
+      () => Hive.box<ReceiptLink>(name),
+      () => Hive.box<StockCount>(name),
+      () => Hive.box<Asset>(name),
+      () => Hive.box<Loan>(name),
+      () => Hive.box<LoanTransaction>(name),
+      () => Hive.box<Expense>(name),
+    ];
+    for (final attempt in attempts) {
+      try {
+        return attempt();
+      } catch (_) {
+        // Wrong type for this box: try the next one.
+      }
+    }
+    return null;
+  }
+
+  static BoxBase<dynamic> _requireLiveBox(String name) {
+    final box = _liveBox(name);
+    if (box == null) {
+      throw BackupException(
+          'The ${labelFor(name)} data is open in a form the backup cannot read. '
+          'Close and reopen the app, then try again.');
+    }
+    return box;
+  }
+
   /// Record counts in the boxes on this device right now.
   static Map<String, int> currentCounts() => <String, int>{
         for (final n in allBoxNames)
-          n: Hive.isBoxOpen(n) ? Hive.box(n).length : 0,
+          n: _liveBox(n)?.length ?? 0,
       };
 
   static Future<List<int>?> _readBoxBytes(String name, Directory dir) async {
     String? path;
     if (Hive.isBoxOpen(name)) {
-      final box = Hive.box(name);
+      final box = _requireLiveBox(name);
       await box.flush();
       path = box.path;
     }
@@ -229,7 +281,7 @@ class BackupService {
   }
 
   static Future<int> _recordCount(String name) async {
-    if (Hive.isBoxOpen(name)) return Hive.box(name).length;
+    if (Hive.isBoxOpen(name)) return _requireLiveBox(name).length;
     final box = await Hive.openBox<dynamic>(name);
     final n = box.length;
     await box.close();
@@ -550,7 +602,7 @@ class BackupService {
     var allGood = true;
     for (final name in allBoxNames) {
       try {
-        if (Hive.isBoxOpen(name)) await Hive.box(name).close();
+        await _liveBox(name)?.close();
         final live = File(_fileFor(dir, name));
         final snap = File('${snapDir.path}/${name.toLowerCase()}.hive');
         if (await snap.exists()) {

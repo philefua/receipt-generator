@@ -8,12 +8,14 @@ import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../../../state/app_state_controller.dart';
+import '../backup_service.dart';
 import '../finance_repository.dart';
 import '../report_adapter.dart';
 import '../report_data.dart';
 import '../report_engine.dart';
 import '../report_period.dart';
 import '../report_workbook.dart';
+import 'backup_page.dart';
 
 enum _PeriodChoice {
   thisMonth,
@@ -148,9 +150,44 @@ class _ManagerReportsPageState extends State<ManagerReportsPage> {
     }
   }
 
+  /// Before exporting, remind the manager to back up when one is due.
+  /// Returns true when the export should go ahead.
+  Future<bool> _confirmBackupFirst() async {
+    final reason = BackupService.reminderMessage(startMonth: _startMonth);
+    if (reason == null) return true;
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Back up first?'),
+        content: Text(
+            '$reason\n\nIt is a good idea to back up before exporting a report.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop('export'),
+            child: const Text('Export anyway'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop('backup'),
+            child: const Text('Back up now'),
+          ),
+        ],
+      ),
+    );
+    if (choice == 'backup') {
+      if (!mounted) return false;
+      await Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => const ManagerBackupPage()),
+      );
+      return false;
+    }
+    return choice == 'export';
+  }
+
   Future<void> _share() async {
     final data = _data;
     if (data == null) return;
+    final proceed = await _confirmBackupFirst();
+    if (!proceed || !mounted) return;
     final settings = context.read<AppStateController>().settings;
     setState(() => _sharing = true);
     try {
