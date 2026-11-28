@@ -56,6 +56,15 @@ class _ManagerReportsPageState extends State<ManagerReportsPage> {
     }
   }
 
+  /// The Tax ID typed in Finance Settings (empty when none).
+  String get _taxId {
+    try {
+      return FinanceRepository.instance.settings.taxId.trim();
+    } catch (_) {
+      return '';
+    }
+  }
+
   ReportPeriod _period() {
     final today = DateTime.now();
     switch (_choice) {
@@ -196,6 +205,7 @@ class _ManagerReportsPageState extends State<ManagerReportsPage> {
         businessName: settings.businessName,
         address: settings.address,
         phone: settings.phone,
+        taxId: _taxId,
         currencySymbol: settings.currencySymbol,
       );
       // Same simple style as the history export's file name (no hyphens).

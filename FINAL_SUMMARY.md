@@ -74,7 +74,7 @@ Tablet (Galaxy Tab A8): backup file, Google Drive backup, Google Drive restore, 
 4. **Drive copy of the backup** was added after the local file, at the owner's request. It only lists files this app uploaded.
 5. **Reminder rule** is 7 days or a new financial year since the last backup.
 6. **Phase 12** was completed early, in phase 4b, so there was no old export left to compare Reports against. Verification is against the Expenses page totals.
-7. **Reports header**: tax ID and app version print blank (no tax ID field in business settings; no `package_info_plus` in the project).
+7. **Reports header**: the Tax ID typed in Finance Settings is printed in the report header (blank if not entered). The app version prints blank because the project has no `package_info_plus`.
 8. **Typed-box bug** in the first backup version (found on the tablet, fixed). Tests cannot reproduce typed boxes on a device, so a tablet check is part of the checklist.
 9. **Cleanup pending**: stray files committed earlier (two `.patch` files, `apply_phase4b.ps1`, `apply_phase5.ps1`) can be removed in a separate commit.
 
